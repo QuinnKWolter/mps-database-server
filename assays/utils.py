@@ -60,7 +60,8 @@ from mps.settings import TEMPLATE_VALIDATION_STARTING_COLUMN_INDEX
 
 from chardet.universaldetector import UniversalDetector
 
-import collections
+import pandas as pd
+import numpy as np
 
 PLATE_FORMATS = ('Tabular', 'Block')
 CHIP_FORMATS = ('Chip',)

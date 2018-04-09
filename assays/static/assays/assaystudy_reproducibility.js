@@ -211,7 +211,6 @@ $(document).ready(function () {
             return false;
         }
         var data = google.visualization.arrayToDataTable(values);
-        console.log(data);
         var options = {
             // title: title,
             interpolateNulls: true,

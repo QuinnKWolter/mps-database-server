@@ -1,6 +1,6 @@
 {# Consolidated submit row #}
 {# Parameters passed via with: group -- group needed for Sign Off, creator -- user needed for Sign Off #}
-{% load custom_filters static %}
+{% load custom_filters static compress %}
 
 <nav id="floating-submit-row" class="footer navbar-fixed-bottom hidden-print floating-submit-row">
     <div class="container large-padding-top">
@@ -16,13 +16,13 @@
                 </a>
                 <span class="glyphicon glyphicon-ok" aria-hidden="true"></span>
                 <span class="sr-only">Success:</span>
-                This entry was signed off on by <b>{{ object.full_reviewer }}</b> on <b>{{ object.signed_off_date }}</b>
+                This entry was signed off by <b>{{ object.full_reviewer }}</b> on <b>{{ object.signed_off_date }}</b>
             </div>
         {# Only show options if this entry is not locked due to being reviewed #}
         {% else %}
 
         <button id="submit" type="submit" class="btn btn-primary">Submit</button>
-        <a class="btn btn-warning" role="button" onclick="window.location.reload(false);">Clear all Changes</a>
+        {# <a class="btn btn-warning" role="button" onclick="window.location.reload(false);">Clear all Changes</a> #}
 
         {% if update and object.get_delete_url %}
             <a role="button" class="btn btn-danger pull-right" href="{{ object.get_delete_url }}">Delete</a>
@@ -78,7 +78,9 @@
 
 {# This section gives a modal alert for when someone is going to overwrite an entry #}
 {% if update %}
+{% compress js %}
 <script src="{% static "js/overwrite.js" %}"></script>
+{% endcompress %}
 
 <div hidden id="overwrite_confirm" title="Overwrite this Entry?">
     <div class="alert alert-warning" role="alert">

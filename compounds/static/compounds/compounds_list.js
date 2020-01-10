@@ -19,10 +19,28 @@ $(document).ready(function() {
         "aoColumnDefs": [
             {
                 "bSortable": false,
-                "aTargets": [0, 1, 9]
+                "aTargets": [0, 1]
             },
+            // {
+            //     "targets": [4, 9],
+            //     "visible": false,
+            //     "searchable": true
+            // },
             {
-                "targets": [4, 10],
+                "targets": [
+                    4,
+                    9,
+                    10,
+                    11,
+                    12,
+                    13,
+                    14,
+                    15,
+                    16,
+                    17,
+                    18,
+                    19,
+                ],
                 "visible": false,
                 "searchable": true
             },

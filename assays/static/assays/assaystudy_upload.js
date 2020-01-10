@@ -5,22 +5,52 @@ $(document).ready(function () {
     // Load core chart package
     google.charts.load('current', {'packages':['corechart']});
     // Set the callback
-    google.charts.setOnLoadCallback(get_readouts);
+    // google.charts.setOnLoadCallback(get_readouts);
+
+    window.GROUPING.refresh_function = refresh_current;
+
+    function refresh_current() {
+        // Not currently used
+        // get_readouts();
+
+        if ($('#id_bulk_file').val()) {
+            validate_bulk_file();
+        }
+    }
 
     var study_id = Math.floor(window.location.href.split('/')[5]);
 
+    window.CHARTS.call = 'validate_data_file';
+    window.CHARTS.study_id = study_id;
+
+    // PROCESS GET PARAMS INITIALLY
+    window.GROUPING.process_get_params();
+
+    // PROCESS GET PARAMS INITIALLY
+    // window.GROUPING.process_get_params();
+    // window.GROUPING.generate_get_params();
+
+    // Not currently used
     function get_readouts() {
         var charts_name = 'current_charts';
 
         var data = {
             call: 'fetch_data_points',
             study: study_id,
+            criteria: JSON.stringify(window.GROUPING.group_criteria),
+            post_filter: JSON.stringify(window.GROUPING.current_post_filter),
             csrfmiddlewaretoken: window.COOKIES.csrfmiddlewaretoken
         };
 
-        var options = window.CHARTS.prepare_chart_options(charts_name);
+        window.CHARTS.global_options = window.CHARTS.prepare_chart_options();
+        var options = window.CHARTS.global_options.ajax_data;
 
         data = $.extend(data, options);
+
+        // Show spinner
+        window.spinner.spin(
+            document.getElementById("spinner")
+        );
 
         $.ajax({
             url: "/assays_ajax/",
@@ -28,10 +58,16 @@ $(document).ready(function () {
             dataType: "json",
             data: data,
             success: function (json) {
+                // Stop spinner
+                window.spinner.stop();
+
                 window.CHARTS.prepare_side_by_side_charts(json, charts_name);
                 window.CHARTS.make_charts(json, charts_name);
             },
             error: function (xhr, errmsg, err) {
+                // Stop spinner
+                window.spinner.stop();
+
                 console.log(xhr.status + ": " + xhr.responseText);
             }
         });
@@ -40,19 +76,23 @@ $(document).ready(function () {
     // Please note that bulk upload does not currently allow changing QC or notes
     // Before permitting this, ensure that the update_number numbers are accurate!
     function validate_bulk_file() {
-        var charts_name = 'new_charts';
+        // var charts_name = 'new_charts';
+        var charts_name = 'charts';
 
-        // var dynamic_quality = $.extend({}, dynamic_quality_current, dynamic_quality_new);
+        // var dynamic_quality = $.extend(true, {}, dynamic_quality_current, dynamic_quality_new);
 
         var data = {
             call: 'validate_data_file',
             study: study_id,
+            criteria: JSON.stringify(window.GROUPING.group_criteria),
+            post_filter: JSON.stringify(window.GROUPING.current_post_filter),
             csrfmiddlewaretoken: window.COOKIES.csrfmiddlewaretoken
         //    dynamic_quality: JSON.stringify(dynamic_quality),
         //    include_table: include_table
         };
 
-        var options = window.CHARTS.prepare_chart_options(charts_name);
+        window.CHARTS.global_options = window.CHARTS.prepare_chart_options();
+        var options = window.CHARTS.global_options.ajax_data;
 
         data = $.extend(data, options);
 
@@ -68,6 +108,11 @@ $(document).ready(function () {
         });
 
         if ($("#id_bulk_file")[0].files[0]) {
+            // Show spinner
+            window.spinner.spin(
+                document.getElementById("spinner")
+            );
+
             $.ajax({
                 url: "/assays_ajax/",
                 type: "POST",
@@ -77,13 +122,17 @@ $(document).ready(function () {
                 processData: false,
                 data: formData,
                 success: function (json) {
+                    // Stop spinner
+                    window.spinner.stop();
+
                     // console.log(json);
                     if (json.errors) {
                         // Display errors
                         alert(json.errors);
                         // Remove file selection
                         $('#id_bulk_file').val('');
-                        $('#new_charts').empty();
+                        // $('#new_charts').empty();
+                        $('#charts').empty();
                     }
                     else {
                         // TODO TODO TODO ALERTS ARE EVIL
@@ -98,14 +147,21 @@ $(document).ready(function () {
 
                         window.CHARTS.prepare_side_by_side_charts(json.readout_data, charts_name);
                         window.CHARTS.make_charts(json.readout_data, charts_name);
+
+                        // CRUDE: SIMPLY UNBIND ALL CHART CONTAINER EVENTS
+                        $(document).off('.chart_context');
                     }
                 },
                 error: function (xhr, errmsg, err) {
+                    // Stop spinner
+                    window.spinner.stop();
+
                     alert('An unknown error has occurred. \nIf you have the file open, you may need to close it.');
                     console.log(xhr.status + ": " + xhr.responseText);
                     // Remove file selection
                     $('#id_bulk_file').val('');
-                    $('#new_charts').empty();
+                    //$('#new_charts').empty();
+                    $('#charts').empty();
                 }
             });
         }
@@ -116,7 +172,13 @@ $(document).ready(function () {
         validate_bulk_file();
     });
 
+    // NOTE: FOR NOW FILTERING WILL BE FORBIDDEN
+    // CRUDE: JUST DISABLE THE BUTTONS
+    $('.post-filter-spawn').html('X').attr('disabled', 'disabled');
+
     // NOTE MAGIC STRING HERE
+    // Commented out for now, will just have preview (not current data to avoid ambiguity with only one sidebar)
+/*
     $('#new_chartschart_options').find('input').change(function() {
         validate_bulk_file();
     });
@@ -125,5 +187,5 @@ $(document).ready(function () {
     $('#current_chartschart_options').find('input').change(function() {
         get_readouts();
     });
+*/
 });
-

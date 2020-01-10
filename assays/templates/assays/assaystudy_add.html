@@ -1,13 +1,14 @@
 {% extends "base.html" %}
 {% load static %}
 
-{% block load %}
-    <script src="{% static "js/inline_add.js" %}"></script>
+{% block load_js %}
     <script src="{% static "js/image_display.js" %}"></script>
     <script src="{% static "js/enter_override.js" %}"></script>
     <script src="{% static "js/calendar.js" %}"></script>
     <script src="{% static "js/flag.js" %}"></script>
+    {# <script src="{% static "js/inline_add.js" %}"></script>#}
     <script src="{% static "assays/assaystudy_add.js" %}"></script>
+    <script src="{% static "assays/reference_selection.js" %}"></script>
 {% endblock %}
 
 {% block breadcrumbs %}
@@ -85,7 +86,7 @@
               {{ form.toxicity }}
             <label for="efficacy" style="padding-left: 20px;padding-right: 10px;">Efficacy</label>
               {{ form.efficacy }}
-            <label for="disease" style="padding-left: 20px;padding-right: 10px;">Disease</label>
+            <label for="disease" style="padding-left: 20px;padding-right: 10px;">Disease Model</label>
               {{ form.disease }}
             {# Please note superficial edit from Cell Characterization to Chip Characterization #}
             {# This is subject to change #}
@@ -158,7 +159,7 @@
             <div>
                 You can upload a file for this study's protocol.
                 <br>
-                The protocol should be <em>specific to this study</em> (i.e. not an organ model protocol).
+                The protocol should be <em>specific to this study</em> (i.e. not an MPS model protocol).
                 <br>
                 <b>Preferred Format: PDF</b>
             </div>
@@ -196,6 +197,8 @@
         </div>
     </div>
 
+    {# HIDDEN FOR NOW #}
+    {% comment %}
     <legend>For Integrated Chip Studies</legend>
     {% if form.study_configuration.errors %}
         {% for error in form.study_configuration.errors %}
@@ -215,10 +218,11 @@
             <br>
             <a href="/assays/studyconfiguration">
                 <span class="glyphicon glyphicon-plus text-success" aria-hidden="true"></span>
-                Add/Edit Integrated Study Configurations (Must Refresh Page to See Change)
+                Add/Edit Integrated Study Configurations
             </a>
         </div>
     </div>
+    {% endcomment %}
 
     {{ study_assay_formset.management_form }}
     <legend>Assays</legend>
@@ -245,10 +249,16 @@
         {% endfor %}
     {% endif %}
 
+    <p>
+        <span class="glyphicon glyphicon-exclamation-sign" aria-hidden="true"></span>
+            To remove filtering by Assay Category for a row, click the Assay Category dropdown of interest and press backspace
+    </p>
+
     <a id="add_button-{{ study_assay_formset.prefix }}" class="btn btn-success" role="button">Add Assay</a>
     <table class="table table-striped inlines" id="{{ study_assay_formset.prefix }}-group"  name="assays">
         <thead>
             <tr>
+                <th>Assay Category</th>
                 <th>Target/Analyte*</th>
                 <th>Method/Kit*</th>
                 <th>Readout Unit*</th>
@@ -264,6 +274,7 @@
                         <input id="id_{{ study_assay_formset.prefix }}-{{ forloop.counter0 }}-id" name="{{ study_assay_formset.prefix }}-{{ forloop.counter0 }}-id" type="hidden" value="{{ assay.id.value }}">
                     </td>
                     {% endif %}
+                    <td>{{ assay.category }}</td>
                     <td>{{ assay.target }}</td>
                     <td>{{ assay.method }}</td>
                     <td>{{ assay.unit }}</td>
@@ -301,8 +312,8 @@
     <table class="table table-striped inlines" id="{{ supporting_data_formset.prefix }}-group" name="supporting_data">
         <thead>
             <tr>
-                <th>Description*</th>
                 <th>Supporting Data File*</th>
+                <th>Description*</th>
                 <th>Delete</th>
             </tr>
         </thead>
@@ -317,12 +328,14 @@
                                value="{{ supporting_data.id.value }}">
                     </td>
                     {% endif %}
-                    <td>{{ supporting_data.description }}</td>
                     <td>{{ supporting_data.supporting_data }}</td>
+                    <td>{{ supporting_data.description }}</td>
                     <td>{{ supporting_data.DELETE }}</td>
                 </tr>
             {% endfor %}
         </tbody>
     </table>
+
+    {% include 'add_reference.html' %}
 </form>
 {% endblock %}

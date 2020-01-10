@@ -1,27 +1,52 @@
 from django import forms
+from django.contrib.auth.models import Group
 from django.forms.models import (
     BaseInlineFormSet,
     inlineformset_factory,
     BaseModelFormSet,
     modelformset_factory,
-    BaseFormSet
 )
-from cellsamples.models import Biosensor, CellSample
-# STOP USING WILDCARD IMPORTS
-from assays.models import *
+from cellsamples.models import Biosensor
+from assays.models import (
+    AssayStudyConfiguration,
+    AssayStudy,
+    AssayStudySupportingData,
+    AssayStudyAssay,
+    AssayMatrix,
+    AssayCategory,
+    TEST_TYPE_CHOICES,
+    PhysicalUnits,
+    AssaySampleLocation,
+    AssaySetting,
+    AssaySetupCompound,
+    AssaySetupCell,
+    AssaySetupSetting,
+    AssayMatrixItem,
+    AssayStudyStakeholder,
+    AssayTarget,
+    AssayMethod,
+    AssayStudyModel,
+    AssayStudySet,
+    AssayReference,
+    AssayStudyReference,
+    AssayStudySetReference,
+    AssayTarget,
+    AssayMeasurementType,
+    AssayMethod,
+    AssaySetting,
+    AssaySupplier,
+    AssayCategory
+)
 from compounds.models import Compound, CompoundInstance, CompoundSupplier
-from microdevices.models import MicrophysiologyCenter
-from mps.forms import SignOffMixin
-# Use regular expressions for a string split at one point
-import re
+from microdevices.models import (
+    MicrophysiologyCenter,
+    Microdevice,
+    OrganModel,
+    OrganModelProtocol
+)
+from mps.forms import SignOffMixin, BootstrapForm, tracking
 import string
-import collections
 from captcha.fields import CaptchaField
-import ujson as json
-
-import datetime
-from django.utils import timezone
-from django.utils.encoding import force_str
 
 from .utils import (
     # validate_file,
@@ -29,58 +54,35 @@ from .utils import (
     # get_plate_details,
     TIME_CONVERSIONS,
     # EXCLUDED_DATA_POINT_CODE,
-    AssayFileProcessor
+    AssayFileProcessor,
+    get_user_accessible_studies,
 )
 from django.utils import timezone
 
-from mps.templatetags.custom_filters import is_group_admin, ADMIN_SUFFIX
+from mps.templatetags.custom_filters import is_group_admin, filter_groups, ADMIN_SUFFIX
 
 from django.core.exceptions import NON_FIELD_ERRORS
+
+import ujson as json
 
 # TODO REFACTOR WHITTLING TO BE HERE IN LIEU OF VIEW
 # TODO REFACTOR FK QUERYSETS TO AVOID N+1
 
 # These are all of the tracking fields
-tracking = (
-    'created_by',
-    'created_on',
-    'modified_on',
-    'modified_by',
-    'signed_off_by',
-    'signed_off_date',
-    'locked',
-    'restricted'
-)
+# tracking = (
+#     'created_by',
+#     'created_on',
+#     'modified_on',
+#     'modified_by',
+#     'signed_off_by',
+#     'signed_off_date',
+#     'locked',
+#     'restricted'
+# )
 # Excluding restricted is likewise useful
 restricted = ('restricted',)
 # Group
 group = ('group',)
-
-# TODO REMOVE RESTRICTED
-
-# Overwrite options
-# DEPRECATED
-OVERWRITE_OPTIONS_BULK = forms.ChoiceField(
-    choices=(
-        ('mark_conflicting_data', 'Replace Conflicting Data'),
-        # ('mark_all_old_data', 'Replace All Current Study Data'),
-        ('keep_conflicting_data', 'Add New Data and Keep Current Data'),
-        # ('delete_conflicting_data', 'Delete Conflicting Data'),
-        # ('delete_all_old_data', 'Delete All Old Data')
-    ),
-    initial='mark_conflicting_data'
-)
-
-OVERWRITE_OPTIONS_INDIVIDUAL = forms.ChoiceField(
-    choices=(
-        ('mark_conflicting_data', 'Replace Conflicting Data'),
-        ('mark_all_old_data', 'Replace All Current Readout Data'),
-        ('keep_conflicting_data', 'Add New Data and Keep Current Data'),
-        # ('delete_conflicting_data', 'Delete Conflicting Data'),
-        # ('delete_all_old_data', 'Delete All Old Data')
-    ),
-    initial='mark_conflicting_data'
-)
 
 
 def get_dic_for_custom_choice_field(form, filters=None):
@@ -104,11 +106,11 @@ def get_dic_for_custom_choice_field(form, filters=None):
 
 
 # DEPRECATED NO LONGER NEEDED AS CHARFIELDS NOW STRIP AUTOMATICALLY
-class ModelFormStripWhiteSpace(forms.ModelForm):
+class ModelFormStripWhiteSpace(BootstrapForm):
     """Strips the whitespace from char and text fields"""
     def clean(self):
         cd = self.cleaned_data
-        for field_name, field in self.fields.items():
+        for field_name, field in list(self.fields.items()):
             if isinstance(field, forms.CharField):
                 if self.fields[field_name].required and not cd.get(field_name, None):
                     self.add_error(field_name, "This is a required field.")
@@ -118,26 +120,35 @@ class ModelFormStripWhiteSpace(forms.ModelForm):
         return super(ModelFormStripWhiteSpace, self).clean()
 
 
-class ModelFormSplitTime(forms.ModelForm):
+class ModelFormSplitTime(BootstrapForm):
     def __init__(self, *args, **kwargs):
         super(ModelFormSplitTime, self).__init__(*args, **kwargs)
 
-        for time_unit in TIME_CONVERSIONS.keys():
+        for time_unit in list(TIME_CONVERSIONS.keys()):
             if self.fields.get('addition_time', None):
                 # Create fields for Days, Hours, Minutes
-                self.fields['addition_time_' + time_unit] = forms.FloatField(initial=0)
-                # Change style
-                self.fields['addition_time_' + time_unit].widget.attrs['style'] = 'width:50px;'
+                self.fields['addition_time_' + time_unit] = forms.FloatField(
+                    initial=0,
+                    widget=forms.NumberInput(attrs={
+                        'class': 'form-control',
+                        'style': 'width:75px;'
+                    })
+                )
             if self.fields.get('duration', None):
-                self.fields['duration_' + time_unit] = forms.FloatField(initial=0)
-                self.fields['duration_' + time_unit].widget.attrs['style'] = 'width:50px;'
+                self.fields['duration_' + time_unit] = forms.FloatField(
+                    initial=0,
+                    widget=forms.NumberInput(attrs={
+                        'class': 'form-control',
+                        'style': 'width:75px;'
+                    })
+                )
 
         # Fill additional time
         if self.fields.get('addition_time', None):
             addition_time_in_minutes_remaining = getattr(self.instance, 'addition_time', 0)
             if not addition_time_in_minutes_remaining:
                 addition_time_in_minutes_remaining = 0
-            for time_unit, conversion in TIME_CONVERSIONS.items():
+            for time_unit, conversion in list(TIME_CONVERSIONS.items()):
                 initial_time_for_current_field = int(addition_time_in_minutes_remaining / conversion)
                 if initial_time_for_current_field:
                     self.fields['addition_time_' + time_unit].initial = initial_time_for_current_field
@@ -151,7 +162,7 @@ class ModelFormSplitTime(forms.ModelForm):
             duration_in_minutes_remaining = getattr(self.instance, 'duration', 0)
             if not duration_in_minutes_remaining:
                 duration_in_minutes_remaining = 0
-            for time_unit, conversion in TIME_CONVERSIONS.items():
+            for time_unit, conversion in list(TIME_CONVERSIONS.items()):
                 initial_time_for_current_field = int(duration_in_minutes_remaining / conversion)
                 if initial_time_for_current_field:
                     self.fields['duration_' + time_unit].initial = initial_time_for_current_field
@@ -168,15 +179,12 @@ class ModelFormSplitTime(forms.ModelForm):
                 'addition_time': 0,
                 'duration': 0
             })
-            for time_unit, conversion in TIME_CONVERSIONS.items():
+            for time_unit, conversion in list(TIME_CONVERSIONS.items()):
                 cleaned_data.update({
                     'addition_time': cleaned_data.get('addition_time') + cleaned_data.get('addition_time_' + time_unit,
                                                                                           0) * conversion,
                     'duration': cleaned_data.get('duration') + cleaned_data.get('duration_' + time_unit, 0) * conversion
                 })
-
-            if self.fields.get('duration', None) is not None and cleaned_data.get('duration') <= 0:
-                raise forms.ValidationError({'duration': ['Duration cannot be zero or negative.']})
 
         return cleaned_data
 
@@ -204,7 +212,7 @@ class BaseModelFormSetForcedUniqueness(BaseModelFormSet):
             seen_data = set()
             for form in valid_forms:
                 # PLEASE NOTE: SPECIAL EXCEPTION FOR FORMS WITH NO ID TO AVOID TRIGGERING ID DUPLICATE
-                if unique_check == (u'id',) and not form.cleaned_data.get('id', ''):
+                if unique_check == ('id',) and not form.cleaned_data.get('id', ''):
                     # IN POOR TASTE, BUT EXPEDIENT
                     continue
 
@@ -268,7 +276,7 @@ class BaseInlineFormSetForcedUniqueness(BaseModelFormSetForcedUniqueness, BaseIn
 
 class DicModelChoiceField(forms.Field):
     """Special field using dictionary instead of queryset as choices
-    
+
     This is to prevent ludicrous numbers of queries
     """
     widget = forms.TextInput
@@ -299,621 +307,12 @@ class DicModelChoiceField(forms.Field):
 
     def valid_value(self, value):
         "Check to see if the provided value is a valid choice"
-        if unicode(value.id) in self.dic.get(self.name):
+        if str(value.id) in self.dic.get(self.name):
             return True
         return False
 
 
-# SUBJECT TO CHANGE
-class CloneableForm(forms.ModelForm):
-    """Convenience class for adding clone fields"""
-    another = forms.BooleanField(required=False, initial=False)
-    success = forms.BooleanField(required=False, initial=False)
-
-
-# SUBJECT TO CHANGE AND REQUIRES TESTING
-class CloneableBaseInlineFormSet(BaseInlineFormSet):
-    """Overrides create form for the sake of using save_as_new for the purpose of cloning"""
-    def _construct_form(self, i, **kwargs):
-        form = super(BaseInlineFormSet, self)._construct_form(i, **kwargs)
-        # Removed code below
-        # if self.save_as_new:
-        #     # Remove the primary key from the form's data, we are only
-        #     # creating new instances
-        #     form.data[form.add_prefix(self._pk_field.name)] = None
-        #
-        #     # Remove the foreign key from the form's data
-        #     form.data[form.add_prefix(self.fk.name)] = None
-
-        # Set the fk value here so that the form can do its validation.
-        fk_value = self.instance.pk
-
-        if self.fk.rel.field_name != self.fk.rel.to._meta.pk.name:
-            fk_value = getattr(self.instance, self.fk.rel.field_name)
-            fk_value = getattr(fk_value, 'pk', fk_value)
-        setattr(form.instance, self.fk.get_attname(), fk_value)
-
-        return form
-
-
-# NOTE: No longer allows sign offs through this form
-class AssayRunForm(forms.ModelForm):
-    """Frontend Form for Studies"""
-    def __init__(self, groups, *args, **kwargs):
-        """Init the Study Form
-
-        Parameters:
-        groups -- a queryset of groups (allows us to avoid N+1 problem)
-        """
-        super(AssayRunForm, self).__init__(*args, **kwargs)
-
-        self.fields['group'].queryset = groups
-
-    class Meta(object):
-        model = AssayRun
-        widgets = {
-            'assay_run_id': forms.Textarea(attrs={'rows': 1}),
-            'name': forms.Textarea(attrs={'rows': 1}),
-            'description': forms.Textarea(attrs={'rows': 5, 'cols': 100}),
-        }
-        exclude = tracking + restricted + ('access_groups', 'signed_off_notes')
-
-    def clean(self):
-        """Checks for at least one study type and deformed assay_run_ids"""
-
-        # clean the form data, before validation
-        data = super(AssayRunForm, self).clean()
-
-        if not any([data['toxicity'], data['efficacy'], data['disease'], data['cell_characterization']]):
-            raise forms.ValidationError('Please select at least one study type')
-
-        if data['assay_run_id'].startswith('-'):
-            raise forms.ValidationError('Error with assay_run_id; please try again')
-
-
-
-class StudySupportingDataInlineFormSet(BaseInlineFormSet):
-    """Form for Study Supporting Data (as part of an inline)"""
-    class Meta(object):
-        model = StudySupportingData
-        exclude = ('',)
-
-
-
-# DEPRECATED
-class AssayRunAccessForm(forms.ModelForm):
-    """Form for changing access to studies"""
-    def __init__(self, *args, **kwargs):
-        super(AssayRunAccessForm, self).__init__(*args, **kwargs)
-        groups_with_center = MicrophysiologyCenter.objects.all().values_list('groups', flat=True)
-        groups_with_center_full = Group.objects.filter(
-            id__in=groups_with_center
-        ).exclude(
-            id=self.instance.group.id
-        ).order_by(
-            'name'
-        )
-        self.fields['access_groups'].queryset = groups_with_center_full
-
-    class Meta(object):
-        model = AssayRun
-        fields = ['access_groups']
-
-
-class AssayChipResultForm(SignOffMixin, forms.ModelForm):
-    """Frontend form for Chip Test Results"""
-    def __init__(self, study, current, *args, **kwargs):
-        """Init the Chip Test Results Form
-
-        Parameters:
-        study -- the study the result is from (to filter Readout dropdown)
-        current -- the currently selected readout (if the Test Result is being updated)
-        """
-        super(AssayChipResultForm, self).__init__(*args, **kwargs)
-        exclude_list = AssayChipTestResult.objects.filter(
-            chip_readout__isnull=False
-        ).values_list(
-            'chip_readout',
-            flat=True
-        )
-        readouts = AssayChipReadout.objects.filter(
-            chip_setup__assay_run_id=study
-        ).exclude(
-            id__in=list(set(exclude_list))
-        )
-        if current:
-            readouts = readouts | AssayChipReadout.objects.filter(pk=current)
-        readouts = readouts.prefetch_related('chip_setup', 'chip_setup__unit', 'chip_setup__compound')
-        self.fields['chip_readout'].queryset = readouts
-
-    class Meta(object):
-        model = AssayChipTestResult
-        widgets = {
-            'summary': forms.Textarea(attrs={'cols': 75, 'rows': 3}),
-        }
-        exclude = group + tracking + restricted
-
-
-class AssayChipReadoutForm(SignOffMixin, CloneableForm):
-    """Frontend form for Chip Readouts"""
-    overwrite_option = OVERWRITE_OPTIONS_INDIVIDUAL
-
-    # EVIL WAY TO GET PREVIEW DATA
-    preview_data = forms.BooleanField(initial=False, required=False)
-
-    def __init__(self, study, current, *args, **kwargs):
-        """Init the Chip Readout Form
-
-        Parameters:
-        study -- the study the readout is from (to filter setup dropdown)
-        current -- the currently selected setup (if the Readout is being updated)
-
-        Additional fields (not part of model):
-        headers -- specifies the number of header lines in the uploaded csv
-
-        kwargs:
-        request -- the current request
-        """
-        self.request = kwargs.pop('request', None)
-
-        super(AssayChipReadoutForm, self).__init__(*args, **kwargs)
-
-        self.fields['timeunit'].queryset = PhysicalUnits.objects.filter(
-            unit_type__unit_type='Time'
-        ).order_by('scale_factor')
-        exclude_list = AssayChipReadout.objects.filter(chip_setup__isnull=False).values_list('chip_setup', flat=True)
-        setups = AssayChipSetup.objects.filter(assay_run_id=study).prefetch_related(
-            'assay_run_id', 'device',
-            'compound', 'unit',
-            'created_by'
-        ).exclude(id__in=list(set(exclude_list)))
-        if current:
-            setups = setups | AssayChipSetup.objects.filter(pk=current)
-        self.fields['chip_setup'].queryset = setups
-
-    # Specifies the number of headers in the uploaded csv
-    # headers = forms.CharField(required=True, initial=1)
-
-    class Meta(object):
-        model = AssayChipReadout
-        widgets = {
-            'notebook_page': forms.NumberInput(attrs={'style': 'width:50px;'}),
-            'treatment_time_length': forms.NumberInput(attrs={'style': 'width:174px;'}),
-            'notes': forms.Textarea(attrs={'cols': 50, 'rows': 3}),
-        }
-        exclude = group + tracking + restricted
-
-    # Set chip setup to unique instead of throwing error in validation
-    def clean(self):
-        super(AssayChipReadoutForm, self).clean()
-
-        setup = self.cleaned_data.get('chip_setup')
-        if setup:
-            self.instance.chip_setup = setup
-
-        if setup and self.request and self.request.FILES:
-            test_file = self.cleaned_data.get('file')
-            file_data = validate_file(
-                self,
-                test_file,
-                'Chip',
-                # headers=headers,
-                # chip_details=chip_details,
-                readout=self.instance,
-                study=setup.assay_run_id
-            )
-            # Evil attempt to acquire preview data
-            self.cleaned_data['preview_data'] = file_data
-
-
-class AssayChipSetupForm(SignOffMixin, CloneableForm):
-    """Frontend form for Chip Setups"""
-    def __init__(self, *args, **kwargs):
-        """Init Chip Setup Form
-
-        Filters physical units to include only concentrations and %
-        Filters devices to only include devices labelled as "chips"
-        """
-        super(AssayChipSetupForm, self).__init__(*args, **kwargs)
-        # Filter on concentration but make a special exception for percent (%)
-        self.fields['unit'].queryset = PhysicalUnits.objects.filter(
-            unit_type__unit_type='Concentration'
-        ).order_by(
-            'base_unit',
-            'scale_factor'
-        ) | PhysicalUnits.objects.filter(unit='%')
-        # Filter devices to be only microchips (or "chips" like the venous system)
-        # self.fields['device'].queryset = Microdevice.objects.filter(device_type='chip')
-
-    class Meta(object):
-        model = AssayChipSetup
-        widgets = {
-            'concentration': forms.NumberInput(attrs={'style': 'width:50px;'}),
-            'notebook_page': forms.NumberInput(attrs={'style': 'width:50px;'}),
-            'notes': forms.Textarea(attrs={'cols': 50, 'rows': 3}),
-            'variance': forms.Textarea(attrs={'cols': 50, 'rows': 2}),
-        }
-        # Assay Run ID is always bound to the parent Study
-        exclude = ('assay_run_id', 'group') + tracking + restricted
-
-    def clean(self):
-        """Cleans the Chip Setup Form
-
-        Ensures the the name is unique in the current study
-        Ensures that the data for a compound is complete
-        Prevents changes to the chip if data has been uploaded (avoiding conflicts between data and entries)
-        """
-        super(AssayChipSetupForm, self).clean()
-
-        # Make sure the barcode/ID is unique in the study
-        if AssayChipSetup.objects.filter(
-                assay_run_id=self.instance.assay_run_id,
-                assay_chip_id=self.cleaned_data.get('assay_chip_id')
-        ).exclude(id=self.instance.id):
-            raise forms.ValidationError({'assay_chip_id': ['ID/Barcode must be unique within study.']})
-
-        # THIS CHECK IS NO LONGER PERFORMED
-        # Check to see if compound data is complete if: 1.) compound test type 2.) compound is selected
-        # current_type = self.cleaned_data.get('chip_test_type', '')
-        # compound = self.cleaned_data.get('compound', '')
-        # concentration = self.cleaned_data.get('concentration', '')
-        # unit = self.cleaned_data.get('unit', '')
-        # if current_type == 'compound' and not all([compound, concentration, unit]) \
-        #         or (compound and not all([concentration, unit])):
-        #     raise forms.ValidationError('Please complete all data for compound.')
-
-        # RENAMING CHIPS WITH DATA IS NOW ALLOWED
-        # Check to see if data has been uploaded for this setup
-        # Prevent changing chip id if this is the case
-        # Get readouts
-        # readout = AssayChipReadout.objects.filter(chip_setup=self.instance)
-        # if readout:
-        #     if AssayChipRawData.objects.filter(assay_chip_id=readout) \
-        #             and self.cleaned_data.get('assay_chip_id') != self.instance.assay_chip_id:
-        #         raise forms.ValidationError(
-        #             {'assay_chip_id': ['Chip ID/Barcode cannot be changed after data has been uploaded.']}
-        #         )
-
-
-def update_compound_instance_and_supplier():
-    """This function is intended to unify the processes involved in updating instances and suppliers"""
-    pass
-
-# Converts: days -> minutes, hours -> minutes, minutes->minutes
-# TIME_CONVERSIONS = [
-#     ('day', 1440),
-#     ('hour', 60),
-#     ('minute', 1)
-# ]
-#
-# TIME_CONVERSIONS = collections.OrderedDict(TIME_CONVERSIONS)
-
-
-class AssayCompoundInstanceInlineFormSet(CloneableBaseInlineFormSet):
-    """Frontend Inline FormSet for Compound Instances"""
-    class Meta(object):
-        model = AssayCompoundInstance
-        exclude = ('',)
-
-    def __init__(self, *args, **kwargs):
-        """Init Chip Setup Form
-
-        Filters physical units to include only Concentration
-        """
-        super(AssayCompoundInstanceInlineFormSet, self).__init__(*args, **kwargs)
-        # Filter on Time
-        # time_unit_queryset = PhysicalUnits.objects.filter(
-        #     unit_type__unit_type='Time'
-        # ).order_by(
-        #     'base_unit',
-        #     'scale_factor'
-        # )
-
-        # Filter compound instances
-        compound_instances = CompoundInstance.objects.all().prefetch_related(
-            'compound',
-            'supplier'
-        )
-        compound_instances_dic = {
-            instance.id: instance for instance in compound_instances
-        }
-
-        # Filter on concentration but make a special exception for percent (%)
-        concentration_unit_queryset = PhysicalUnits.objects.filter(
-            unit_type__unit_type='Concentration'
-        ).order_by(
-            'base_unit',
-            'scale_factor'
-        ) | PhysicalUnits.objects.filter(unit='%')
-
-        for form in self.forms:
-            # form.fields['start_time_unit'].queryset = time_unit_queryset
-            # form.fields['duration_unit'].queryset = time_unit_queryset
-            form.fields['concentration_unit'].queryset = concentration_unit_queryset
-            form.fields['compound_instance'].queryset = compound_instances
-
-            # All available compounds
-            form.fields['compound'] = forms.ModelChoiceField(queryset=Compound.objects.all())
-            # Text field (un-saved) for supplier
-            form.fields['supplier_text'] = forms.CharField()
-            # Text field (un-saved) for lot
-            form.fields['lot_text'] = forms.CharField()
-            # Receipt date
-            form.fields['receipt_date'] = forms.DateField(required=False)
-
-            # Add fields for splitting time into days, hours, and minutes
-            # Times are trickier to fill in, uses formula that prioritizes larger denominations
-            for time_unit in TIME_CONVERSIONS.keys():
-                # Create fields for Days, Hours, Minutes
-                form.fields['addition_time_' + time_unit] = forms.FloatField(initial=0)
-                form.fields['duration_' + time_unit] = forms.FloatField(initial=0)
-                # Change style
-                form.fields['addition_time_' + time_unit].widget.attrs['style'] = 'width:50px;'
-                form.fields['duration_' + time_unit].widget.attrs['style'] = 'width:50px;'
-
-            # If instance, apply initial values
-            if form.instance.compound_instance_id:
-                current_compound_instance = compound_instances_dic.get(form.instance.compound_instance_id)
-
-                form.fields['compound'].initial = current_compound_instance.compound
-                form.fields['supplier_text'].initial = current_compound_instance.supplier.name
-                form.fields['lot_text'].initial = current_compound_instance.lot
-                form.fields['receipt_date'].initial = current_compound_instance.receipt_date
-
-                # Fill additional time
-                addition_time_in_minutes_remaining = form.instance.addition_time
-                for time_unit, conversion in TIME_CONVERSIONS.items():
-                    initial_time_for_current_field = int(addition_time_in_minutes_remaining / conversion)
-                    if initial_time_for_current_field:
-                        form.fields['addition_time_' + time_unit].initial = initial_time_for_current_field
-                        addition_time_in_minutes_remaining -= initial_time_for_current_field * conversion
-                # Add fractions of minutes if necessary
-                if addition_time_in_minutes_remaining:
-                    form.fields['addition_time_minute'].initial += addition_time_in_minutes_remaining
-
-                # Fill duration
-                duration_in_minutes_remaining = form.instance.duration
-                for time_unit, conversion in TIME_CONVERSIONS.items():
-                    initial_time_for_current_field = int(duration_in_minutes_remaining / conversion)
-                    if initial_time_for_current_field:
-                        form.fields['duration_' + time_unit].initial = initial_time_for_current_field
-                        duration_in_minutes_remaining -= initial_time_for_current_field * conversion
-                # Add fractions of minutes if necessary
-                if duration_in_minutes_remaining:
-                    form.fields['duration_minute'].initial += duration_in_minutes_remaining
-
-            # Set CSS class to receipt date to use date picker
-            form.fields['receipt_date'].widget.attrs['class'] = 'datepicker-input'
-
-    def clean(self):
-        """Checks to make sure duration is valid"""
-        for index, form in enumerate(self.forms):
-            current_data = form.cleaned_data
-
-            if form.cleaned_data and not form.cleaned_data.get('DELETE', False):
-                addition_time = 0
-                duration = 0
-                for time_unit, conversion in TIME_CONVERSIONS.items():
-                    addition_time += current_data.get('addition_time_' + time_unit, 0) * conversion
-                    duration += current_data.get('duration_' + time_unit, 0) * conversion
-
-                if duration <= 0:
-                    form.add_error('duration', 'Duration cannot be zero or negative.')
-
-    # TODO THIS IS NOT DRY
-    def save(self, commit=True):
-        # Get forms_data (excluding those with delete or no data)
-        forms_data = [f for f in self.forms if f.cleaned_data and not f.cleaned_data.get('DELETE', False)]
-        forms_to_delete = [f for f in self.forms if f.cleaned_data and f.cleaned_data.get('DELETE', False)]
-
-        # Forms to be deleted
-        for form in forms_to_delete:
-            instance = super(forms.ModelForm, form).save(commit=False)
-
-            if instance and instance.id and commit:
-                instance.delete()
-
-        chip_setup = self.instance
-
-        # Get all chip setup assay compound instances
-        assay_compound_instances = {
-            (
-                instance.compound_instance.id,
-                instance.concentration,
-                instance.concentration_unit.id,
-                instance.addition_time,
-                instance.duration
-            ): True for instance in AssayCompoundInstance.objects.filter(
-                chip_setup=chip_setup
-            ).prefetch_related(
-                'compound_instance__compound',
-                'concentration_unit'
-            )
-        }
-
-        # Get all Compound Instances
-        compound_instances = {
-            (
-                instance.compound.id,
-                instance.supplier.id,
-                instance.lot,
-                instance.receipt_date
-            ): instance for instance in CompoundInstance.objects.all().prefetch_related(
-                'compound',
-                'supplier'
-            )
-        }
-
-        # Get all suppliers
-        suppliers = {
-            supplier.name: supplier for supplier in CompoundSupplier.objects.all()
-        }
-
-        # Forms to save
-        for form in forms_data:
-            instance = super(forms.ModelForm, form).save(commit=False)
-
-            current_data = form.cleaned_data
-
-            compound = current_data.get('compound')
-            supplier_text = current_data.get('supplier_text').strip()
-            lot_text = current_data.get('lot_text').strip()
-            receipt_date = current_data.get('receipt_date')
-
-            # Should be acquired straight from form
-            # concentration = current_data.get('concentration')
-            # concentration_unit = current_data.get('concentration_unit')
-
-            addition_time = 0
-            duration = 0
-            for time_unit, conversion in TIME_CONVERSIONS.items():
-                addition_time += current_data.get('addition_time_' + time_unit, 0) * conversion
-                duration += current_data.get('duration_' + time_unit, 0) * conversion
-
-            # Check if the supplier already exists
-            supplier = suppliers.get(supplier_text, '')
-            # Otherwise create the supplier
-            if not supplier:
-                supplier = CompoundSupplier(
-                    name=supplier_text,
-                    created_by=chip_setup.created_by,
-                    created_on=chip_setup.created_on,
-                    modified_by=chip_setup.modified_by,
-                    modified_on=chip_setup.modified_on
-                )
-                if commit:
-                    supplier.save()
-                suppliers.update({
-                    supplier_text: supplier
-                })
-
-            # Check if compound instance exists
-            compound_instance = compound_instances.get((compound.id, supplier.id, lot_text, receipt_date), '')
-            if not compound_instance:
-                compound_instance = CompoundInstance(
-                    compound=compound,
-                    supplier=supplier,
-                    lot=lot_text,
-                    receipt_date=receipt_date,
-                    created_by=chip_setup.created_by,
-                    created_on=chip_setup.created_on,
-                    modified_by=chip_setup.modified_by,
-                    modified_on=chip_setup.modified_on
-                )
-                if commit:
-                    compound_instance.save()
-                compound_instances.update({
-                    (compound.id, supplier.id, lot_text, receipt_date): compound_instance
-                })
-
-            # Update the instance with new data
-            instance.chip_setup = chip_setup
-            instance.compound_instance = compound_instance
-
-            instance.addition_time = addition_time
-            instance.duration = duration
-
-            # Save the AssayCompoundInstance
-            if commit:
-                conflicting_assay_compound_instance = assay_compound_instances.get(
-                    (
-                        instance.compound_instance.id,
-                        instance.concentration,
-                        instance.concentration_unit.id,
-                        instance.addition_time,
-                        instance.duration
-                    ), None
-                )
-                if not conflicting_assay_compound_instance:
-                    instance.save()
-
-            assay_compound_instances.update({
-                (
-                    instance.compound_instance.id,
-                    instance.concentration,
-                    instance.concentration_unit.id,
-                    instance.addition_time,
-                    instance.duration
-                ): True
-            })
-            # AssayCompoundInstance(
-            #     chip_setup=chip_setup,
-            #     compound_instance=compound_instance,
-            #     addition_time=addition_time,
-            #     # start_time_unit=start_time_unit,
-            #     duration=duration,
-            #     # duration_unit=duration_unit,
-            #     concentration=concentration,
-            #     concentration_unit=concentration_unit
-            # ).save()
-
-
-class AssayChipCellsInlineFormset(CloneableBaseInlineFormSet):
-    """Frontend Inline Formset for Chip Cells"""
-
-    class Meta(object):
-        model = AssayChipCells
-        exclude = ('',)
-
-    # def clean(self):
-    #     forms_data = [f for f in self.forms if f.cleaned_data and not f.cleaned_data.get('DELETE', False)]
-    #
-    #     #Does not require a minimum number of cellsamples at the moment
-    #     Number of cellsamples
-    #     cellsamples = 0
-    #     for form in forms_data:
-    #         try:
-    #             if form.cleaned_data:
-    #                 cellsamples += 1
-    #         except AttributeError:
-    #             pass
-    #     if cellsamples < 1:
-    #         raise forms.ValidationError('You must have at least one cellsample.')
-
-
-class ChipTestResultInlineFormset(BaseInlineFormSet):
-    """Frontend inline formset for Individual Chip Results"""
-    def __init__(self, *args, **kwargs):
-        """Init the Chip Result Inline
-
-        Filters units so that only those marked 'test' appear in the dropdown
-        """
-        self.study = kwargs.pop('study', None)
-        super(ChipTestResultInlineFormset, self).__init__(*args, **kwargs)
-        assay_queryset = AssayInstance.objects.filter(
-            study=self.study
-        )
-        unit_queryset = PhysicalUnits.objects.filter(
-            availability__icontains='test'
-        ).order_by('unit_type', 'base_unit', 'scale_factor')
-        for form in self.forms:
-            form.fields['assay_name'].queryset = assay_queryset
-            form.fields['test_unit'].queryset = unit_queryset
-
-    class Meta(object):
-        model = AssayChipResult
-        exclude = ('',)
-
-    def clean(self):
-        """Clean Result Inline
-
-        Prevents submission with no results
-        """
-        forms_data = [f for f in self.forms if f.cleaned_data and not f.cleaned_data.get('DELETE', False)]
-
-        # Number of results
-        results = 0
-        for form in forms_data:
-            try:
-                if form.cleaned_data:
-                    results += 1
-            except AttributeError:
-                pass
-        if results < 1:
-            raise forms.ValidationError('You must have at least one result.')
-
-
-class AssayStudyConfigurationForm(SignOffMixin, forms.ModelForm):
+class AssayStudyConfigurationForm(SignOffMixin, BootstrapForm):
     """Frontend Form for Study Configurations"""
     class Meta(object):
         model = AssayStudyConfiguration
@@ -925,226 +324,38 @@ class AssayStudyConfigurationForm(SignOffMixin, forms.ModelForm):
         exclude = tracking
 
 
-# Forms for plates may become more useful later
-class AssayLayoutForm(SignOffMixin, forms.ModelForm):
-    """Frontend Form for Assay Layouts
-
-    Additional fields (not part of model):
-    compound -- dropdown for selecting compounds to add to the Layout map
-    concentration_unit -- dropdown for selecting a concentration unit for the Layout map
-    """
-    def __init__(self, groups, *args, **kwargs):
-        super(AssayLayoutForm, self).__init__(*args, **kwargs)
-        self.fields['group'].queryset = groups
-        self.fields['device'].queryset = Microdevice.objects.filter(
-            device_type='plate'
-        )
-
-        for time_unit in TIME_CONVERSIONS.keys():
-            # Create fields for Days, Hours, Minutes
-            self.fields['addition_time_' + time_unit] = forms.FloatField(initial=0, required=False)
-            self.fields['duration_' + time_unit] = forms.FloatField(initial=0, required=False)
-            # Change style
-            self.fields['addition_time_' + time_unit].widget.attrs['style'] = 'width:50px;'
-            self.fields['duration_' + time_unit].widget.attrs['style'] = 'width:50px;'
-
-        # Set CSS class to receipt date to use date picker
-        # Set CSS class to receipt date to use date picker
-        self.fields['receipt_date'].widget.attrs['class'] = 'datepicker-input'
-
-    compound = forms.ModelChoiceField(queryset=Compound.objects.all().order_by('name'), required=False)
-    # Notice the special exception for %
-    concentration_unit = forms.ModelChoiceField(
-        queryset=(PhysicalUnits.objects.filter(
-            unit_type__unit_type='Concentration'
-        ).order_by(
-            'base_unit',
-            'scale_factor'
-        ) | PhysicalUnits.objects.filter(unit='%')),
-        required=False, initial=4
-    )
-    concentration = forms.FloatField(required=False)
-
-    # Text field (un-saved) for supplier
-    supplier_text = forms.CharField(required=False)
-    # Text field (un-saved) for lot
-    lot_text = forms.CharField(required=False)
-    # Receipt date
-    receipt_date = forms.DateField(required=False)
-
+class AssayStudyModelForm(BootstrapForm):
     class Meta(object):
-        model = AssayLayout
-        widgets = {
-            'layout_name': forms.TextInput(attrs={'size': 35}),
-        }
-        exclude = tracking + restricted
+        model = AssayStudyModel
+        exclude = ('' ,)
 
-
-class AssayPlateSetupForm(SignOffMixin, CloneableForm):
-    """Frontend Form for Plate Setups"""
     def __init__(self, *args, **kwargs):
-        """Init Plate Setup Form
-
-        Orders AssayLayouts such that standard layouts appear first (does not currently filter)
-        """
-        super(AssayPlateSetupForm, self).__init__(*args, **kwargs)
-        # Should the queryset be restricted by group?
-        self.fields['assay_layout'].queryset = AssayLayout.objects.all().order_by('-standard', 'layout_name')
-
-    class Meta(object):
-        model = AssayPlateSetup
-        widgets = {
-            'notebook_page': forms.NumberInput(attrs={'style': 'width:50px;'}),
-            'notes': forms.Textarea(attrs={'cols': 50, 'rows': 3}),
-        }
-        exclude = ('assay_run_id', 'group') + tracking + restricted
-
-    def clean(self):
-        """Clean Plate Setup Form
-
-        Ensures that the given ID is unique for the current study
-        Prevents changes to the setup if there is data uploaded
-        """
-        super(forms.ModelForm, self).clean()
-
-        # Make sure the barcode/id is unique in the study
-        if AssayPlateSetup.objects.filter(
-                assay_run_id=self.instance.assay_run_id,
-                assay_plate_id=self.cleaned_data.get('assay_plate_id')
-        ).exclude(id=self.instance.id):
-            raise forms.ValidationError({'assay_plate_id': ['ID/Barcode must be unique within study.']})
-
-        # Check to see if data has been uploaded for this setup
-        # Prevent changing the assay layout if this is the case
-        # Prevent changing plate id if this is the case
-        # Get readouts
-        readout = AssayPlateReadout.objects.filter(setup=self.instance)
-        if readout:
-            if AssayReadout.objects.filter(
-                    assay_device_readout=readout
-            ) and self.cleaned_data.get('assay_layout') != self.instance.assay_layout:
-                raise forms.ValidationError(
-                    {'assay_layout': ['Assay layout cannot be changed after data has been uploaded.']}
-                )
-            # RENAMING PLATES WITH DATA IS NOW ALLOWED
-            # if AssayReadout.objects.filter(
-            #         assay_device_readout=readout
-            # ) and self.cleaned_data.get('assay_plate_id') != self.instance.assay_plate_id:
-            #     raise forms.ValidationError(
-            #         {'assay_plate_id': ['Plate ID/Barcode cannot be changed after data has been uploaded.']}
-            #     )
+        super(AssayStudyModelForm, self).__init__(*args, **kwargs)
+        self.fields['label'].widget.attrs.update({
+            'size': '4',
+            'max_length': '2'
+        })
+        self.fields['sequence_number'].widget.attrs.update({
+            'size': '4',
+            'max_length': '2'
+        })
+        self.fields['output'].widget.attrs.update({
+            'size': '20',
+            'max_length': '20'
+        })
 
 
-class AssayPlateCellsInlineFormset(CloneableBaseInlineFormSet):
-    """Frontend Inline Formset for Plate Cells"""
-    class Meta(object):
-        model = AssayPlateCells
-        exclude = ('',)
-
-
-class AssayPlateReadoutForm(SignOffMixin, CloneableForm):
-    """Frontend Form for Assay Plate Readouts"""
-    def __init__(self, study, current, *args, **kwargs):
-        """Init Assay Plate Readout Form
-
-        Parameters:
-        study -- the current study (for filtering Setups)
-        current -- the current setup (if the Readout is being updated)
-
-        Additional fields (not part of model):
-        upload_type -- specifies whether the upload is in tabular or block format
-
-        Filters units to be only time units
-        Filters Setups to exclude Setups used by other Readouts
-        """
-        super(AssayPlateReadoutForm, self).__init__(*args, **kwargs)
-        self.fields['timeunit'].queryset = PhysicalUnits.objects.filter(
-            unit_type__unit_type='Time'
-        ).order_by('scale_factor')
-        exclude_list = AssayPlateReadout.objects.filter(setup__isnull=False).values_list('setup', flat=True)
-        setups = AssayPlateSetup.objects.filter(assay_run_id=study).prefetch_related(
-            'assay_run_id', 'assay_layout',
-            'created_by').exclude(id__in=list(set(exclude_list)))
-        if current:
-            setups = setups | AssayPlateSetup.objects.filter(pk=current)
-        self.fields['setup'].queryset = setups
-
-    # upload_type = forms.ChoiceField(choices=(('Block', 'Block'), ('Tabular', 'Tabular')))
-
-    overwrite_option = OVERWRITE_OPTIONS_INDIVIDUAL
-
-    class Meta(object):
-        model = AssayPlateReadout
-        widgets = {
-            'notebook_page': forms.NumberInput(attrs={'style': 'width:50px;'}),
-            'treatment_time_length': forms.NumberInput(attrs={'style': 'width:174px;'}),
-            'notes': forms.Textarea(attrs={'cols': 50, 'rows': 3}),
-        }
-        exclude = group + tracking + restricted
-
-
-class AssayPlateResultForm(SignOffMixin, forms.ModelForm):
-    """Frontend Form for Plate Test Results"""
-    def __init__(self, study, current, *args, **kwargs):
-        """Init Plate Test Results Form
-
-        Parameters:
-        study -- the current study (for filtering Readouts)
-        current -- the current Results (if the Results are being updated)
-
-        Filters Readouts to exclude Readouts being used by other Test Results
-        """
-        super(AssayPlateResultForm, self).__init__(*args, **kwargs)
-        exclude_list = AssayPlateTestResult.objects.filter(readout__isnull=False).values_list('readout', flat=True)
-        readouts = AssayPlateReadout.objects.filter(setup__assay_run_id=study).exclude(id__in=list(set(exclude_list)))
-        if current:
-            readouts = readouts | AssayPlateReadout.objects.filter(pk=current)
-        readouts = readouts.prefetch_related('setup')
-        self.fields['readout'].queryset = readouts
-
-    class Meta(object):
-        model = AssayPlateTestResult
-        widgets = {
-            'summary': forms.Textarea(attrs={'cols': 75, 'rows': 3}),
-        }
-        exclude = group + tracking + restricted
-
-
-class PlateTestResultInlineFormset(BaseInlineFormSet):
-    """Frontend inline for Individual Plate Results"""
-    def __init__(self, *args, **kwargs):
-        """Init Plate Result Inline
-
-        Filters units such that only 'test' units appear
-        """
-        super(PlateTestResultInlineFormset, self).__init__(*args, **kwargs)
-        unit_queryset = PhysicalUnits.objects.filter(
-            availability__icontains='test'
-        ).order_by('unit_type', 'base_unit', 'scale_factor')
-        for form in self.forms:
-            form.fields['test_unit'].queryset = unit_queryset
-
-    class Meta(object):
-        model = AssayPlateResult
-        exclude = ('',)
-
-    def clean(self):
-        """Clean Plate Results Inline
-
-        Prevents submission with no Results
-        """
-        forms_data = [f for f in self.forms if f.cleaned_data and not f.cleaned_data.get('DELETE', False)]
-
-        # Number of results
-        results = 0
-        for form in forms_data:
-            try:
-                if form.cleaned_data:
-                    results += 1
-            except AttributeError:
-                pass
-        if results < 1:
-            raise forms.ValidationError('You must have at least one result.')
+# FormSet for Study Models
+AssayStudyModelFormSet = inlineformset_factory(
+    AssayStudyConfiguration,
+    AssayStudyModel,
+    extra=1,
+    form=AssayStudyModelForm,
+    widgets={
+        'label': forms.TextInput(attrs={'size': 2}),
+        'sequence_number': forms.TextInput(attrs={'size': 2})
+    }
+)
 
 
 def label_to_number(label):
@@ -1156,226 +367,6 @@ def label_to_number(label):
     return num
 
 
-def process_readout_value(value):
-    """Returns processed readout value and whether or not to mark it invalid"""
-
-    # Try to parse as a float
-    try:
-        value = float(value)
-        return {'value': value, 'quality': u''}
-
-    except ValueError:
-        # If not a float, take slice of all but first character and try again
-        sliced_value = value[1:]
-
-        try:
-            sliced_value = float(sliced_value)
-            return {'value': sliced_value, 'quality': EXCLUDED_DATA_POINT_CODE}
-
-        except ValueError:
-            return None
-
-
-def get_row_and_column(well_id, offset):
-    """Takes a well ID in the form A1 and returns a row and column index as a tuple
-
-    Params:
-    well_id - the well ID as a string
-    offset - offset to resulting row and column indexes (to start at zero, for instance)
-    """
-    # Split the well into alphabetical and numeric
-    row_label, column_label = re.findall(r"[^\W\d_]+|\d+", well_id)
-
-    # PLEASE NOTE THAT THE VALUES ARE OFFSET BY ONE (to begin with 0)
-    # Convert row_label to a number
-    row_label = label_to_number(row_label) - offset
-    # Convert column label to an integer
-    column_label = int(column_label) - offset
-
-    # Note that the parentheses are not redundant, this is a tuple
-    return (row_label, column_label)
-
-
-class AssayPlateReadoutInlineFormset(CloneableBaseInlineFormSet):
-    """Frontend Inline for Assay Plate Readout Assays (APRA)"""
-
-    # EVIL WAY TO GET PREVIEW DATA
-    preview_data = forms.BooleanField(initial=False, required=False)
-
-    def __init__(self, *args, **kwargs):
-        """Init APRA inline
-
-        Filters units so that only units marked 'readout' appear
-        """
-        super(AssayPlateReadoutInlineFormset, self).__init__(*args, **kwargs)
-        unit_queryset = PhysicalUnits.objects.filter(
-            availability__icontains='readout'
-        ).order_by('unit_type', 'base_unit', 'scale_factor')
-        for form in self.forms:
-            form.fields['readout_unit'].queryset = unit_queryset
-
-    def clean(self):
-        """Clean APRA Inline
-
-        Validate unique, existing PLATE READOUTS
-        """
-        if self.data.get('setup', ''):
-            setup_pk = int(self.data.get('setup'))
-        else:
-            raise forms.ValidationError('Please choose a plate setup.')
-        setup = AssayPlateSetup.objects.get(pk=setup_pk)
-        setup_id = setup.assay_plate_id
-
-        # TODO REVIEW
-        # Get upload type
-        # upload_type = self.data.get('upload_type')
-
-        forms_data = [f for f in self.forms if f.cleaned_data and not f.cleaned_data.get('DELETE', False)]
-
-        plate_details = get_plate_details(self=self)
-
-        assays = plate_details.get(setup_id, {}).get('assays', {})
-        features = plate_details.get(setup_id, {}).get('features', {})
-        assay_feature_to_unit = plate_details.get(setup_id, {}).get('assay_feature_to_unit', {})
-
-        # If there is already a file in the database and it is not being replaced or cleared
-        # (check for clear is implicit)
-        if self.instance.file and not forms_data[0].files:
-            saved_data = AssayReadout.objects.filter(assay_device_readout=self.instance).prefetch_related('assay')
-
-            for raw in saved_data:
-                assay = raw.assay.assay_id.assay_name.upper()
-                value_unit = raw.assay.readout_unit.unit
-                feature = raw.assay.feature
-
-                # Raise error when an assay does not exist
-                if assay not in assays:
-                    raise forms.ValidationError(
-                        'You can not remove the assay "{}" because it is in your uploaded data.'.format(assay))
-                # Raise error if feature does not correspond?
-                elif feature not in features:
-                    raise forms.ValidationError(
-                        'You can not remove the feature "{}" because it is in your uploaded data.'.format(feature))
-                elif (assay, feature) not in assay_feature_to_unit:
-                    raise forms.ValidationError(
-                        'You can not change the assay-feature pair "{0}-{1}" '
-                        'because it is in your uploaded data'.format(assay, feature)
-                    )
-                # Raise error if value_unit not equal to one listed in APRA
-                # Note use of features to unit (unlike chips)
-                if value_unit != assay_feature_to_unit.get((assay, feature), ''):
-                    raise forms.ValidationError(
-                        'The current value unit "%s" does not correspond with the readout unit of "%s"'
-                        % (value_unit, assay_feature_to_unit.get((assay, feature), ''))
-                    )
-
-        # TODO what shall a uniqueness check look like?
-        # If there is a new file
-        if forms_data[0].files:
-            test_file = forms_data[0].files.get('file', '')
-            file_data = validate_file(
-                self,
-                test_file,
-                'Plate',
-                plate_details=plate_details,
-                # upload_type=upload_type,
-                study=setup.assay_run_id,
-            )
-            # Evil attempt to acquire preview data
-            self.forms[0].cleaned_data['preview_data'] = file_data
-
-        return self.forms
-
-
-# DEPRECATED
-class AssayChipReadoutInlineFormset(CloneableBaseInlineFormSet):
-    """Frontend Inline for Chip Readout Assays (ACRA)"""
-
-    # EVIL WAY TO GET PREVIEW DATA
-    preview_data = forms.BooleanField(initial=False, required=False)
-
-    def __init__(self, *args, **kwargs):
-        """Init ACRA Inline
-
-        Filters units so that only units marked 'readout' appear
-        """
-        super(AssayChipReadoutInlineFormset, self).__init__(*args, **kwargs)
-        unit_queryset = PhysicalUnits.objects.filter(
-            availability__icontains='readout'
-        ).order_by('unit_type', 'base_unit', 'scale_factor')
-        for form in self.forms:
-            form.fields['readout_unit'].queryset = unit_queryset
-
-    def clean(self):
-        """Validate unique, existing Chip Readout IDs"""
-        if self.data.get('chip_setup', ''):
-            setup_pk = int(self.data.get('chip_setup'))
-        else:
-            raise forms.ValidationError('Please choose a chip setup.')
-        setup = AssayChipSetup.objects.get(pk=setup_pk)
-        # setup_id = setup.assay_chip_id
-
-        # # Throw error if headers is not valid
-        # try:
-        #     headers = int(self.data.get('headers', '')) if self.data.get('headers', '') else 0
-        # except:
-        #     raise forms.ValidationError('Please make number of headers a valid number.')
-
-        forms_data = [f for f in self.forms if f.cleaned_data and not f.cleaned_data.get('DELETE', False)]
-
-        # chip_details = get_chip_details(self=self)
-        #
-        # assays = chip_details.get(setup_id, {}).get('assays', {})
-
-        # If there is already a file in the database and it is not being replaced or cleared
-        #  (check for clear is implicit)
-        # if self.instance.file and not forms_data[0].files:
-        #     new_time_unit = self.instance.timeunit
-        #     old_time_unit = AssayChipReadout.objects.get(id=self.instance.id).timeunit
-        #
-        #     # Fail if time unit does not match
-        #     if new_time_unit != old_time_unit:
-        #         raise forms.ValidationError(
-        #             'The time unit "%s" does not correspond with the selected readout time unit of "%s"'
-        #             % (new_time_unit, old_time_unit))
-        #
-        #     saved_data = AssayChipRawData.objects.filter(assay_chip_id=self.instance).prefetch_related(
-        #         'assay_id__assay_id'
-        #     )
-        #
-        #     for raw in saved_data:
-        #         assay = raw.assay_id.assay_id.assay_name.upper()
-        #         value_unit = raw.assay_id.readout_unit.unit
-        #
-        #         # Raise error when an assay does not exist
-        #         if assay not in assays:
-        #             raise forms.ValidationError(
-        #                 'You can not remove the assay "%s" because it is in your uploaded data.' % assay)
-        #         # Raise error if value_unit not equal to one listed in ACRA
-        #         elif value_unit not in assays.get(assay, ''):
-        #             raise forms.ValidationError(
-        #                 'The current value unit "%s" does not correspond with the readout units "%s"'
-        #                 % (value_unit, assays.get(assay, ''))
-        #             )
-
-        # If there is a new file
-        if forms_data and forms_data[0].files:
-            test_file = forms_data[0].files.get('file', '')
-            file_data = validate_file(
-                self,
-                test_file,
-                'Chip',
-                # headers=headers,
-                # chip_details=chip_details,
-                plate_details=None,
-                study=setup.assay_run_id,
-            )
-            # Evil attempt to acquire preview data
-            self.forms[0].cleaned_data['preview_data'] = file_data
-
-        return self.forms
-
-
 # Now uses unicode instead of string
 def stringify_excel_value(value):
     """Given an excel value, return a unicode cast of it
@@ -1383,110 +374,17 @@ def stringify_excel_value(value):
     This also converts floats to integers when possible
     """
     # If the value is just a string literal, return it
-    if type(value) == str or type(value) == unicode:
-        return unicode(value)
+    if type(value) == str or type(value) == str:
+        return str(value)
     else:
         try:
             # If the value can be an integer, make it into one
             if int(value) == float(value):
-                return unicode(int(value))
+                return str(int(value))
             else:
-                return unicode(float(value))
+                return str(float(value))
         except:
-            return unicode(value)
-
-
-# SPAGHETTI CODE FIND A BETTER PLACE TO PUT THIS?
-def valid_chip_row(row):
-    """Confirm that a row is valid"""
-    return row and all(row[:5] + [row[6]])
-
-
-def get_bulk_datalist(sheet):
-    """Get a list of lists where each list is a row and each entry is a value"""
-    # Get datalist
-    datalist = []
-
-    # Include the first row (the header)
-    for row_index in range(sheet.nrows):
-        datalist.append([stringify_excel_value(value) for value in sheet.row_values(row_index)])
-
-    return datalist
-
-
-class ReadoutBulkUploadForm(forms.ModelForm):
-    """Form for Bulk Uploads"""
-    # Now in Study (AssayRun) to make saving easier
-    # bulk_file = forms.FileField()
-
-    overwrite_option = OVERWRITE_OPTIONS_BULK
-
-    # EVIL WAY TO GET PREVIEW DATA
-    preview_data = forms.BooleanField(initial=False, required=False)
-
-    class Meta(object):
-        model = AssayRun
-        fields = ('bulk_file',)
-
-    def __init__(self, *args, **kwargs):
-        """Init the Bulk Form
-
-        kwargs:
-        request -- the current request
-        """
-        self.request = kwargs.pop('request', None)
-
-        super(ReadoutBulkUploadForm, self).__init__(*args, **kwargs)
-
-    def clean(self):
-        data = super(ReadoutBulkUploadForm, self).clean()
-
-        # Get the study in question
-        study = self.instance
-
-        # test_file = None
-
-        if self.request and self.request.FILES:
-            test_file = data.get('bulk_file', '')
-
-            file_data = validate_file(
-                self,
-                test_file,
-                'Bulk',
-                # headers=headers,
-                study=study
-            )
-
-            # Evil attempt to acquire preview data
-            self.cleaned_data['preview_data'] = file_data
-
-        # Removed, someone might want to use this interface to remove data
-        # if not test_file:
-        #     raise forms.ValidationError('No file was supplied.')
-
-        return self.cleaned_data
-
-
-class AssayInstanceInlineFormSet(BaseInlineFormSet):
-    def __init__(self, *args, **kwargs):
-        """Init APRA inline
-
-        Filters units so that only units marked 'readout' appear
-        """
-        super(AssayInstanceInlineFormSet, self).__init__(*args, **kwargs)
-
-        target_queryset = AssayTarget.objects.all().order_by('name')
-
-        method_queryset = AssayMethod.objects.all().order_by('name')
-
-        unit_queryset = PhysicalUnits.objects.filter(
-            availability__icontains='readout'
-        ).order_by('unit_type', 'base_unit', 'scale_factor')
-
-        for form in self.forms:
-            form.fields['target'].queryset = target_queryset
-            form.fields['method'].queryset = method_queryset
-            form.fields['unit'].queryset = unit_queryset
+            return str(value)
 
 
 class AssayStudyAssayInlineFormSet(BaseInlineFormSet):
@@ -1501,14 +399,24 @@ class AssayStudyAssayInlineFormSet(BaseInlineFormSet):
 
         method_queryset = AssayMethod.objects.all().order_by('name')
 
-        unit_queryset = PhysicalUnits.objects.filter(
-            availability__icontains='readout'
-        ).order_by('unit_type', 'base_unit', 'scale_factor')
+        # unit_queryset = PhysicalUnits.objects.filter(
+        #     availability__icontains='readout'
+        # ).order_by('unit_type__unit_type', 'base_unit__unit', 'scale_factor')
+
+        unit_queryset = PhysicalUnits.objects.order_by('unit_type__unit_type', 'base_unit__unit', 'scale_factor')
+
+        category_queryset = AssayCategory.objects.all().order_by('name')
 
         for form in self.forms:
             form.fields['target'].queryset = target_queryset
             form.fields['method'].queryset = method_queryset
             form.fields['unit'].queryset = unit_queryset
+
+            form.fields['category'] = forms.ModelChoiceField(
+                queryset=category_queryset,
+                required=False,
+                empty_label='All'
+            )
 
 
 class ReadyForSignOffForm(forms.Form):
@@ -1517,16 +425,15 @@ class ReadyForSignOffForm(forms.Form):
 
 
 # TODO PLEASE REVIEW
-class AssayStudyForm(SignOffMixin, forms.ModelForm):
+class AssayStudyForm(SignOffMixin, BootstrapForm):
     def __init__(self, *args, **kwargs):
         """Init the Study Form
 
         Kwargs:
         groups -- a queryset of groups (allows us to avoid N+1 problem)
         """
-        self.groups = kwargs.pop('groups', None)
         super(AssayStudyForm, self).__init__(*args, **kwargs)
-        self.fields['group'].queryset = self.groups
+        self.fields['group'].queryset = filter_groups(self.user)
 
     class Meta(object):
         model = AssayStudy
@@ -1535,7 +442,7 @@ class AssayStudyForm(SignOffMixin, forms.ModelForm):
             'name': forms.Textarea(attrs={'rows': 1}),
             'description': forms.Textarea(attrs={'rows': 5, 'cols': 100}),
         }
-        exclude = tracking + restricted + ('access_groups', 'signed_off_notes', 'bulk_file')
+        exclude = tracking + restricted + ('access_groups', 'signed_off_notes', 'bulk_file', 'collaborator_groups')
 
     def clean(self):
         """Checks for at least one study type"""
@@ -1546,7 +453,7 @@ class AssayStudyForm(SignOffMixin, forms.ModelForm):
             raise forms.ValidationError('Please select at least one study type')
 
 
-class AssayStudyFormAdmin(forms.ModelForm):
+class AssayStudyFormAdmin(BootstrapForm):
     """Admin Form for Assay Runs (now referred to as Studies)"""
     class Meta(object):
         model = AssayStudy
@@ -1572,10 +479,11 @@ class AssayStudyFormAdmin(forms.ModelForm):
 
         groups_without_repeat = groups_with_center_full
 
-        if self.instance:
+        if self.instance and getattr(self.instance, 'group', ''):
             groups_without_repeat.exclude(pk=self.instance.group.id)
 
         self.fields['access_groups'].queryset = groups_without_repeat
+        self.fields['collaborator_groups'].queryset = groups_without_repeat
 
     def clean(self):
         # clean the form data, before validation
@@ -1585,10 +493,29 @@ class AssayStudyFormAdmin(forms.ModelForm):
             raise forms.ValidationError('Please select at least one study type')
 
 
+class AssayStudySupportingDataForm(BootstrapForm):
+    class Meta(object):
+        model = AssayStudySupportingData
+        exclude = ('',)
+
+
+class AssayStudyAssayForm(BootstrapForm):
+    class Meta(object):
+        model = AssayStudyAssay
+        exclude = ('',)
+
+
+class AssayStudySupportingDataInlineFormSet(BaseInlineFormSet):
+    """Form for Study Supporting Data (as part of an inline)"""
+    class Meta(object):
+        model = AssayStudySupportingData
+        exclude = ('',)
+
 AssayStudySupportingDataFormSetFactory = inlineformset_factory(
     AssayStudy,
     AssayStudySupportingData,
-    formset=StudySupportingDataInlineFormSet,
+    form=AssayStudySupportingDataForm,
+    formset=AssayStudySupportingDataInlineFormSet,
     extra=1,
     exclude=[],
     widgets={
@@ -1596,41 +523,19 @@ AssayStudySupportingDataFormSetFactory = inlineformset_factory(
     }
 )
 
-# AssayInstanceFormSet = inlineformset_factory(
-#     AssayStudy,
-#     AssayInstance,
-#     formset=AssayInstanceInlineFormSet,
-#     extra=1,
-#     exclude=[]
-# )
-
 AssayStudyAssayFormSetFactory = inlineformset_factory(
     AssayStudy,
     AssayStudyAssay,
+    form=AssayStudyAssayForm,
     formset=AssayStudyAssayInlineFormSet,
     extra=1,
     exclude=[]
 )
 
 
-# TODO ADD STUDY
-class AssayMatrixForm(SignOffMixin, forms.ModelForm):
-    class Meta(object):
-        model = AssayMatrix
-        exclude = ('study',) + tracking
-        widgets = {
-            'name': forms.Textarea(attrs={'rows': 1}),
-            'notes': forms.Textarea(attrs={'rows': 3}),
-            'variance_from_organ_model_protocol': forms.Textarea(attrs={'rows': 3}),
-        }
-
+class SetupFormsMixin(BootstrapForm):
     def __init__(self, *args, **kwargs):
-        self.study = kwargs.pop('study', None)
-        self.user = kwargs.pop('user', None)
-        super(AssayMatrixForm, self).__init__(*args, **kwargs)
-
-        if self.study:
-            self.instance.study = self.study
+        super(SetupFormsMixin, self).__init__(*args, **kwargs)
 
         sections_with_times = (
             'compound',
@@ -1638,71 +543,64 @@ class AssayMatrixForm(SignOffMixin, forms.ModelForm):
             'setting'
         )
 
-        for time_unit in TIME_CONVERSIONS.keys():
+        for time_unit in list(TIME_CONVERSIONS.keys()):
             for current_section in sections_with_times:
                 # Create fields for Days, Hours, Minutes
-                self.fields[current_section + '_addition_time_' + time_unit] = forms.FloatField(initial=0, required=False)
-                self.fields[current_section + '_duration_' + time_unit] = forms.FloatField(initial=0, required=False)
-                # self.fields['addition_time_' + time_unit + '_increment'] = forms.FloatField(initial=0, required=False)
-                # self.fields['duration_' + time_unit + '_increment'] = forms.FloatField(initial=0, required=False)
-                # Change style
-                self.fields[current_section + '_addition_time_' + time_unit].widget.attrs['style'] = 'width:50px;'
-                self.fields[current_section + '_duration_' + time_unit].widget.attrs['style'] = 'width:50px;'
-                # self.fields['addition_time_' + time_unit + '_increment'].widget.attrs['style'] = 'width:50px;'
-                # self.fields['duration_' + time_unit + '_increment'].widget.attrs['style'] = 'width:50px;'
+                self.fields[current_section + '_addition_time_' + time_unit] = forms.FloatField(
+                    initial=0,
+                    required=False,
+                    widget=forms.NumberInput(attrs={
+                        'class': 'form-control required',
+                        'style': 'width:75px;'
+                    })
+                )
+                self.fields[current_section + '_duration_' + time_unit] = forms.FloatField(
+                    initial=0,
+                    required=False,
+                    widget=forms.NumberInput(attrs={
+                        'class': 'form-control required',
+                        'style': 'width:75px;'
+                    })
+                )
 
-        # Set CSS class to receipt date to use date picker
-        self.fields['compound_receipt_date'].widget.attrs['class'] = 'datepicker-input'
-        self.fields['item_setup_date'].widget.attrs['class'] = 'datepicker-input'
+        self.fields['cell_cell_sample'].widget.attrs['style'] = 'width:75px;'
+        self.fields['cell_passage'].widget.attrs['style'] = 'width:75px;'
 
-        # Set the widgets for some additional fields
-        self.fields['item_name'].widget = forms.Textarea(attrs={'rows': 1})
-        self.fields['item_scientist'].widget = forms.Textarea(attrs={'rows': 1})
-        self.fields['item_notes'].widget = forms.Textarea(attrs={'rows': 3})
-        self.fields['item_variance_from_organ_model_protocol'].widget = forms.Textarea(attrs={'rows': 3})
-        self.fields['item_notebook_page'].widget.attrs['style'] = 'width:50px;'
-        self.fields['cell_cell_sample'].widget.attrs['style'] = 'width:50px;'
-        self.fields['cell_passage'].widget.attrs['style'] = 'width:50px;'
+        # DUMB, BAD (can't have them be "actually" required or they prevent submission
+        add_required_to = [
+            'cell_cell_sample',
+            'cell_biosensor',
+            'cell_density',
+            'cell_density_unit',
+            'cell_addition_location',
+            'setting_setting',
+            'setting_unit',
+            'setting_value',
+            'setting_addition_location',
+            'compound_compound',
+            'compound_concentration_unit',
+            'compound_concentration',
+            'compound_addition_location',
+        ]
 
-    ### ADDITIONAL MATRIX FIELDS (unsaved)
-    number_of_items = forms.IntegerField(required=False)
+        for current_field in add_required_to:
+            self.fields[current_field].widget.attrs['class'] += ' required'
 
-    ### ITEM FIELD HELPERS
-    action = forms.ChoiceField(choices=(
-        ('', 'Please Select an Action'),
-        ('add_name', 'Add Names/IDs*'),
-        ('add_test_type', 'Add Test Type*'),
-        ('add_date', 'Add Setup Date*'),
-        ('add_device', 'Add Device/Organ Model Information*'),
-        ('add_settings', 'Add Settings'),
-        ('add_compounds', 'Add Compounds'),
-        ('add_cells', 'Add Cells'),
-        ('add_notes', 'Add Notes/Notebook Information'),
-        # ADD BACK LATER
-        # ('copy', 'Copy Contents'),
-        # TODO TODO TODO TENTATIVE
-        # ('clear', 'Clear Contents'),
-        ('delete', 'Delete Selected'),
-    ), required=False)
+            # Sloppy
+            if hasattr(self.fields[current_field], '_queryset'):
+                if hasattr(self.fields[current_field]._queryset, 'model'):
+                    # Usually one would use a hyphen rather than an underscore
+                    # self.fields[field].widget.attrs['data-app'] = self.fields[field]._queryset.model._meta.app_label
+                    self.fields[current_field].widget.attrs['data_app'] = self.fields[current_field]._queryset.model._meta.app_label
 
-    # The item_ isn't just to be annoying, I want to avoid conflicts with other fields
-    ### ADDING ITEM FIELDS
-    item_name = forms.CharField(required=False)
+                    # self.fields[field].widget.attrs['data-model'] = self.fields[field]._queryset.model._meta.object_name
+                    self.fields[current_field].widget.attrs['data_model'] = self.fields[current_field]._queryset.model._meta.object_name
 
-    item_setup_date = forms.DateField(required=False)
+                    self.fields[current_field].widget.attrs['data_verbose_name'] = self.fields[current_field]._queryset.model._meta.verbose_name
 
-    item_test_type = forms.ChoiceField(required=False, choices=TEST_TYPE_CHOICES)
-
-    item_scientist = forms.CharField(required=False)
-    item_notebook = forms.CharField(required=False)
-    item_notebook_page = forms.CharField(required=False)
-    item_notes = forms.CharField(required=False)
-
-    ### ADDING SETUP FIELDS
-    item_device = forms.ModelChoiceField(queryset=Microdevice.objects.all().order_by('name'), required=False)
-    item_organ_model = forms.ModelChoiceField(queryset=OrganModel.objects.all().order_by('name'), required=False)
-    item_organ_model_protocol = forms.ModelChoiceField(queryset=OrganModelProtocol.objects.all().order_by('version'), required=False)
-    item_variance_from_organ_model_protocol = forms.CharField(required=False)
+                    # Possibly dumber
+                    if hasattr(self.fields[current_field]._queryset.model, 'get_add_url_manager'):
+                        self.fields[current_field].widget.attrs['data_add_url'] = self.fields[current_field]._queryset.model.get_add_url_manager()
 
     ### ADDING SETUP CELLS
     cell_cell_sample = forms.IntegerField(required=False)
@@ -1716,7 +614,9 @@ class AssayMatrixForm(SignOffMixin, forms.ModelForm):
 
     # TODO THIS IS TO BE HAMMERED OUT
     cell_density_unit = forms.ModelChoiceField(
-        queryset=PhysicalUnits.objects.filter(availability__contains='cell'),
+        queryset=PhysicalUnits.objects.filter(
+            availability__contains='cell'
+        ).order_by('unit'),
         required=False
     )
 
@@ -1728,10 +628,12 @@ class AssayMatrixForm(SignOffMixin, forms.ModelForm):
     setting_setting = forms.ModelChoiceField(queryset=AssaySetting.objects.all().order_by('name'), required=False)
     setting_unit = forms.ModelChoiceField(queryset=PhysicalUnits.objects.all().order_by('base_unit','scale_factor'), required=False)
 
-    setting_value = forms.FloatField(required=False)
+    setting_value = forms.CharField(required=False)
 
-    setting_addition_location = forms.ModelChoiceField(queryset=AssaySampleLocation.objects.all().order_by('name'),
-                                                        required=False)
+    setting_addition_location = forms.ModelChoiceField(
+        queryset=AssaySampleLocation.objects.all().order_by('name'),
+        required=False
+    )
 
     ### ADDING COMPOUNDS
     compound_compound = forms.ModelChoiceField(queryset=Compound.objects.all().order_by('name'), required=False)
@@ -1740,42 +642,239 @@ class AssayMatrixForm(SignOffMixin, forms.ModelForm):
         queryset=(PhysicalUnits.objects.filter(
             unit_type__unit_type='Concentration'
         ).order_by(
-            'base_unit',
+            'base_unit__unit',
             'scale_factor'
         ) | PhysicalUnits.objects.filter(unit='%')),
         required=False, initial=4
     )
     compound_concentration = forms.FloatField(required=False)
 
-    compound_addition_location = forms.ModelChoiceField(queryset=AssaySampleLocation.objects.all().order_by('name'),
-                                                       required=False)
+    compound_addition_location = forms.ModelChoiceField(
+        queryset=AssaySampleLocation.objects.all().order_by('name'),
+        required=False
+    )
+    # Text field (un-saved) for supplier
+    compound_supplier_text = forms.CharField(
+        required=False,
+        initial=''
+    )
+    # Text field (un-saved) for lot
+    compound_lot_text = forms.CharField(
+        required=False,
+        initial=''
+    )
+    # Receipt date
+    compound_receipt_date = forms.DateField(required=False)
+
+
+# TODO ADD STUDY
+class AssayMatrixForm(SetupFormsMixin, SignOffMixin, BootstrapForm):
+    class Meta(object):
+        model = AssayMatrix
+        exclude = ('study',) + tracking
+        widgets = {
+            'number_of_columns': forms.NumberInput(attrs={'style': 'width: 100px;'}),
+            'number_of_rows': forms.NumberInput(attrs={'style': 'width: 100px;'}),
+            'name': forms.Textarea(attrs={'rows': 1}),
+            'notes': forms.Textarea(attrs={'rows': 3}),
+            'variance_from_organ_model_protocol': forms.Textarea(attrs={'rows': 3}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        self.study = kwargs.pop('study', None)
+        self.user = kwargs.pop('user', None)
+        super(AssayMatrixForm, self).__init__(*args, **kwargs)
+
+        if self.study:
+            self.instance.study = self.study
+
+        # sections_with_times = (
+        #     'compound',
+        #     'cell',
+        #     'setting'
+        # )
+        #
+        # for time_unit in list(TIME_CONVERSIONS.keys()):
+        #     for current_section in sections_with_times:
+        #         # Create fields for Days, Hours, Minutes
+        #         self.fields[current_section + '_addition_time_' + time_unit] = forms.FloatField(
+        #             initial=0,
+        #             required=False,
+        #             widget=forms.NumberInput(attrs={
+        #                 'class': 'form-control',
+        #                 'style': 'width:75px;'
+        #             })
+        #         )
+        #         self.fields[current_section + '_duration_' + time_unit] = forms.FloatField(
+        #             initial=0,
+        #             required=False,
+        #             widget=forms.NumberInput(attrs={
+        #                 'class': 'form-control',
+        #                 'style': 'width:75px;'
+        #             })
+        #         )
+
+        # Changing these things in init is bad
+        self.fields['matrix_item_notebook_page'].widget.attrs['style'] = 'width:75px;'
+        # self.fields['cell_cell_sample'].widget.attrs['style'] = 'width:75px;'
+        # self.fields['cell_passage'].widget.attrs['style'] = 'width:75px;'
+
+        # Make sure no selectize
+        # CONTRIVED
+        self.fields['matrix_item_full_organ_model'].widget.attrs['class'] = 'no-selectize'
+        self.fields['matrix_item_full_organ_model_protocol'].widget.attrs['class'] = 'no-selectize'
+
+        # No selectize on action either (hides things, looks odd)
+        # CONTRIVED
+        # self.fields['action'].widget.attrs['class'] += ' no-selectize'
+
+        # DUMB, BAD (can't have them be "actually" required or they prevent submission
+        add_required_to = [
+            'matrix_item_name',
+            'matrix_item_setup_date',
+            'matrix_item_test_type',
+            'matrix_item_name',
+            'matrix_item_device',
+            'matrix_item_organ_model',
+        ]
+
+        for current_field in add_required_to:
+            self.fields[current_field].widget.attrs['class'] += ' required'
+
+    ### ADDITIONAL MATRIX FIELDS (unsaved)
+    number_of_items = forms.IntegerField(required=False)
+
+    ### ITEM FIELD HELPERS
+    # action = forms.ChoiceField(choices=(
+    #     ('', 'Please Select an Action'),
+    #     ('add_name', 'Add Names/IDs*'),
+    #     ('add_test_type', 'Add Test Type*'),
+    #     ('add_date', 'Add Setup Date*'),
+    #     ('add_device', 'Add Device/MPS Model Information*'),
+    #     ('add_settings', 'Add Settings'),
+    #     ('add_compounds', 'Add Compounds'),
+    #     ('add_cells', 'Add Cells'),
+    #     ('add_notes', 'Add Notes/Notebook Information'),
+    #     # ADD BACK LATER
+    #     # ('copy', 'Copy Contents'),
+    #     # TODO TODO TODO TENTATIVE
+    #     # ('clear', 'Clear Contents'),
+    #     ('delete', 'Delete Selected'),
+    # ), required=False)
+
+    # The matrix_item isn't just to be annoying, I want to avoid conflicts with other fields
+    ### ADDING ITEM FIELDS
+    matrix_item_name = forms.CharField(
+        required=False,
+        widget=forms.Textarea(attrs={'rows': 1}),
+        label='Matrix Item Name'
+    )
+
+    matrix_item_setup_date = forms.DateField(
+        required=False,
+        label='Matrix Item Setup Date'
+    )
+    # Foolish!
+    matrix_item_setup_date_popup = forms.DateField(required=False)
+
+    matrix_item_test_type = forms.ChoiceField(
+        required=False,
+        choices=TEST_TYPE_CHOICES,
+        label='Matrix Item Test Type'
+    )
+
+    matrix_item_scientist = forms.CharField(
+        required=False,
+        widget=forms.Textarea(attrs={'rows': 1}),
+        label='Scientist'
+    )
+    matrix_item_notebook = forms.CharField(
+        required=False,
+        label='Notebook'
+    )
+    matrix_item_notebook_page = forms.CharField(
+        required=False,
+        label='Notebook Page'
+    )
+    matrix_item_notes = forms.CharField(
+        required=False,
+        widget=forms.Textarea(attrs={'rows': 3}),
+        label='Notes'
+    )
+
+    ### ADDING SETUP FIELDS
+    matrix_item_device = forms.ModelChoiceField(
+        queryset=Microdevice.objects.all().order_by('name'),
+        required=False,
+        label='Matrix Item Device'
+    )
+    matrix_item_organ_model = forms.ModelChoiceField(
+        queryset=OrganModel.objects.all().order_by('name'),
+        required=False,
+        label='Matrix Item MPS Model'
+    )
+    matrix_item_organ_model_protocol = forms.ModelChoiceField(
+        queryset=OrganModelProtocol.objects.all().order_by('version'),
+        required=False,
+        label='Matrix Item MPS Model Version'
+    )
+    matrix_item_variance_from_organ_model_protocol = forms.CharField(
+        required=False,
+        widget=forms.Textarea(attrs={'rows': 3}),
+        label='Matrix Item Variance from Protocol'
+    )
+
+    matrix_item_full_organ_model = forms.ModelChoiceField(
+        queryset=OrganModel.objects.all().order_by('name'),
+        required=False
+    )
+    matrix_item_full_organ_model_protocol = forms.ModelChoiceField(
+        queryset=OrganModelProtocol.objects.all(),
+        required=False
+    )
 
     ### INCREMENTER
     compound_concentration_increment = forms.FloatField(required=False, initial=1)
-    compound_concentration_increment_type = forms.ChoiceField(choices=(
-        ('/', 'Divide'),
-        ('*', 'Multiply'),
-        ('+', 'Add'),
-        ('-', 'Subtract')
-    ), required=False)
-    compound_concentration_increment_direction = forms.ChoiceField(choices=(
-        ('lrd', 'Left to Right and Down'),
-        ('rlu', 'Right to Left and Up')
-    ), required=False)
+    compound_concentration_increment_type = forms.ChoiceField(
+        choices=(
+            ('/', 'Divide'),
+            ('*', 'Multiply'),
+            ('+', 'Add'),
+            ('-', 'Subtract')
+        ),
+        required=False
+    )
+    compound_concentration_increment_direction = forms.ChoiceField(
+        choices=(
+            ('lr', 'Left to Right'),
+            ('d', 'Down'),
+            ('rl', 'Right to Left'),
+            ('u', 'Up'),
+            ('lrd', 'Left to Right and Down'),
+            ('rlu', 'Right to Left and Up')
+        ),
+        required=False,
+        initial='lr'
+    )
 
-    # Text field (un-saved) for supplier
-    compound_supplier_text = forms.CharField(required=False, initial='')
-    # Text field (un-saved) for lot
-    compound_lot_text = forms.CharField(required=False, initial='')
-    # Receipt date
-    compound_receipt_date = forms.DateField(required=False)
+    # Options for deletion
+    delete_option = forms.ChoiceField(
+        required=False,
+        choices=(
+            ('all', 'Everything'),
+            ('cell', 'Cells'),
+            ('compound', 'Compounds'),
+            ('setting', 'Settings'),
+        ),
+        label='Delete Option'
+    )
 
     # FORCE UNIQUENESS CHECK
     def clean(self):
         super(AssayMatrixForm, self).clean()
 
         if AssayMatrix.objects.filter(
-                study=self.instance.study,
+                study_id=self.instance.study.id,
                 name=self.cleaned_data.get('name', '')
         ).exclude(pk=self.instance.pk).count():
             raise forms.ValidationError({'name': ['Matrix name must be unique within study.']})
@@ -1856,13 +955,17 @@ class AssaySetupCompoundFormSet(BaseModelFormSetForcedUniqueness):
             for field in self.custom_fields:
                 form.fields[field] = DicModelChoiceField(field, self.model, self.dic)
 
+            # Purge all classes
+            for field in form.fields:
+                form.fields[field].widget.attrs['class'] = ''
+
     def _construct_form(self, i, **kwargs):
         form = super(AssaySetupCompoundFormSet, self)._construct_form(i, **kwargs)
 
         # Text field (un-saved) for supplier
-        form.fields['supplier_text'] = forms.CharField(initial='N/A')
+        form.fields['supplier_text'] = forms.CharField(initial='N/A', required=False)
         # Text field (un-saved) for lot
-        form.fields['lot_text'] = forms.CharField(initial='N/A')
+        form.fields['lot_text'] = forms.CharField(initial='N/A', required=False)
         # Receipt date
         form.fields['receipt_date'] = forms.DateField(required=False)
 
@@ -1896,7 +999,7 @@ class AssaySetupCompoundFormSet(BaseModelFormSetForcedUniqueness):
         # Forms to be deleted
         for form in forms_to_delete:
             try:
-                instance = forms.ModelForm.save(form, commit=False)
+                instance = BootstrapForm.save(form, commit=False)
 
                 if instance and instance.id and commit:
                     instance.delete()
@@ -1906,11 +1009,18 @@ class AssaySetupCompoundFormSet(BaseModelFormSetForcedUniqueness):
 
         # Forms to save
         for form in forms_data:
-            instance = forms.ModelForm.save(form, commit=False)
+            instance = BootstrapForm.save(form, commit=False)
 
             matrix_item = instance.matrix_item
 
             current_data = form.cleaned_data
+
+            # Bad
+            if not current_data.get('supplier_text'):
+                current_data['supplier_text'] = 'N/A'
+
+            if not current_data.get('lot_text'):
+                current_data['lot_text'] = 'N/A'
 
             compound_id = int(current_data.get('compound'))
             supplier_text = current_data.get('supplier_text').strip()
@@ -1923,7 +1033,7 @@ class AssaySetupCompoundFormSet(BaseModelFormSetForcedUniqueness):
 
             addition_time = 0
             duration = 0
-            for time_unit, conversion in TIME_CONVERSIONS.items():
+            for time_unit, conversion in list(TIME_CONVERSIONS.items()):
                 addition_time += current_data.get('addition_time_' + time_unit, 0) * conversion
                 duration += current_data.get('duration_' + time_unit, 0) * conversion
 
@@ -1938,8 +1048,10 @@ class AssaySetupCompoundFormSet(BaseModelFormSetForcedUniqueness):
                     modified_by=matrix_item.modified_by,
                     modified_on=matrix_item.modified_on
                 )
-                if commit:
-                    supplier.save()
+                # if commit:
+                #     supplier.save()
+                # Always save the supplier
+                supplier.save()
                 self.suppliers.update({
                     supplier_text: supplier
                 })
@@ -1957,8 +1069,10 @@ class AssaySetupCompoundFormSet(BaseModelFormSetForcedUniqueness):
                     modified_by=matrix_item.modified_by,
                     modified_on=matrix_item.modified_on
                 )
-                if commit:
-                    compound_instance.save()
+                # if commit:
+                #     compound_instance.save()
+                # ALWAYS MAKE A NEW COMPOUND INSTANCE
+                compound_instance.save()
                 self.compound_instances.update({
                     (compound_id, supplier.id, lot_text, receipt_date): compound_instance
                 })
@@ -2028,7 +1142,7 @@ class AssaySetupCompoundInlineFormSet(BaseInlineFormSet):
         concentration_unit_queryset = PhysicalUnits.objects.filter(
             unit_type__unit_type='Concentration'
         ).order_by(
-            'base_unit',
+            'base_unit__unit',
             'scale_factor'
         ) | PhysicalUnits.objects.filter(unit='%')
 
@@ -2039,14 +1153,30 @@ class AssaySetupCompoundInlineFormSet(BaseInlineFormSet):
             form.fields['compound_instance'].queryset = compound_instances
 
             # All available compounds
-            form.fields['compound'] = forms.ModelChoiceField(queryset=Compound.objects.all())
+            form.fields['compound'] = forms.ModelChoiceField(
+                queryset=Compound.objects.all(),
+                widget=forms.Select(attrs={'class': 'form-control'})
+            )
             # Text field (un-saved) for supplier
-            form.fields['supplier_text'] = forms.CharField()
+            form.fields['supplier_text'] = forms.CharField(
+                initial='',
+                widget=forms.TextInput(attrs={'class': 'form-control'}),
+                required=False
+            )
             # Text field (un-saved) for lot
-            form.fields['lot_text'] = forms.CharField()
+            form.fields['lot_text'] = forms.CharField(
+                initial='',
+                widget=forms.TextInput(attrs={'class': 'form-control'}),
+                required=False
+            )
             # Receipt date
-            form.fields['receipt_date'] = forms.DateField(required=False)
-
+            form.fields['receipt_date'] = forms.DateField(
+                required=False,
+                widget=forms.DateInput(attrs={
+                    'class': 'form-control datepicker-input',
+                    'autocomplete': 'off'
+                })
+            )
             # If instance, apply initial values
             if form.instance.compound_instance_id:
                 current_compound_instance = compound_instances_dic.get(form.instance.compound_instance_id)
@@ -2056,8 +1186,24 @@ class AssaySetupCompoundInlineFormSet(BaseInlineFormSet):
                 form.fields['lot_text'].initial = current_compound_instance.lot
                 form.fields['receipt_date'].initial = current_compound_instance.receipt_date
 
-            # Set CSS class to receipt date to use date picker
-            form.fields['receipt_date'].widget.attrs['class'] = 'datepicker-input'
+            # VERY SLOPPY
+            form.fields['compound'].widget.attrs['class'] += ' required'
+
+            current_field = 'compound'
+            if hasattr(form.fields[current_field], '_queryset'):
+                if hasattr(form.fields[current_field]._queryset, 'model'):
+                    # Usually one would use a hyphen rather than an underscore
+                    # form.fields[field].widget.attrs['data-app'] = form.fields[field]._queryset.model._meta.app_label
+                    form.fields[current_field].widget.attrs['data_app'] = form.fields[current_field]._queryset.model._meta.app_label
+
+                    # form.fields[field].widget.attrs['data-model'] = form.fields[field]._queryset.model._meta.object_name
+                    form.fields[current_field].widget.attrs['data_model'] = form.fields[current_field]._queryset.model._meta.object_name
+
+                    form.fields[current_field].widget.attrs['data_verbose_name'] = form.fields[current_field]._queryset.model._meta.verbose_name
+
+                    # Possibly dumber
+                    if hasattr(form.fields[current_field]._queryset.model, 'get_add_url_manager'):
+                        form.fields[current_field].widget.attrs['data_add_url'] = form.fields[current_field]._queryset.model.get_add_url_manager()
 
     # TODO THIS IS NOT DRY
     def save(self, commit=True):
@@ -2067,7 +1213,7 @@ class AssaySetupCompoundInlineFormSet(BaseInlineFormSet):
 
         # Forms to be deleted
         for form in forms_to_delete:
-            instance = super(forms.ModelForm, form).save(commit=False)
+            instance = super(BootstrapForm, form).save(commit=False)
 
             if instance and instance.id and commit:
                 instance.delete()
@@ -2084,7 +1230,7 @@ class AssaySetupCompoundInlineFormSet(BaseInlineFormSet):
                 instance.duration,
                 instance.addition_location_id
             ): True for instance in AssaySetupCompound.objects.filter(
-            matrix_item=matrix_item
+            matrix_item_id=matrix_item.id
             ).prefetch_related(
                 'compound_instance__compound',
                 'concentration_unit'
@@ -2111,9 +1257,16 @@ class AssaySetupCompoundInlineFormSet(BaseInlineFormSet):
 
         # Forms to save
         for form in forms_data:
-            instance = super(forms.ModelForm, form).save(commit=False)
+            instance = super(BootstrapForm, form).save(commit=False)
 
             current_data = form.cleaned_data
+
+            # Bad
+            if not current_data.get('supplier_text'):
+                current_data['supplier_text'] = 'N/A'
+
+            if not current_data.get('lot_text'):
+                current_data['lot_text'] = 'N/A'
 
             compound = current_data.get('compound')
             supplier_text = current_data.get('supplier_text').strip()
@@ -2126,7 +1279,7 @@ class AssaySetupCompoundInlineFormSet(BaseInlineFormSet):
 
             addition_time = 0
             duration = 0
-            for time_unit, conversion in TIME_CONVERSIONS.items():
+            for time_unit, conversion in list(TIME_CONVERSIONS.items()):
                 addition_time += current_data.get('addition_time_' + time_unit, 0) * conversion
                 duration += current_data.get('duration_' + time_unit, 0) * conversion
 
@@ -2141,8 +1294,10 @@ class AssaySetupCompoundInlineFormSet(BaseInlineFormSet):
                     modified_by=matrix_item.modified_by,
                     modified_on=matrix_item.modified_on
                 )
-                if commit:
-                    supplier.save()
+                # if commit:
+                #     supplier.save()
+                # Always save the supplier
+                supplier.save()
                 suppliers.update({
                     supplier_text: supplier
                 })
@@ -2160,8 +1315,10 @@ class AssaySetupCompoundInlineFormSet(BaseInlineFormSet):
                     modified_by=matrix_item.modified_by,
                     modified_on=matrix_item.modified_on
                 )
-                if commit:
-                    compound_instance.save()
+                # if commit:
+                #     compound_instance.save()
+                # ALWAYS MAKE A NEW COMPOUND INSTANCE
+                compound_instance.save()
                 compound_instances.update({
                     (compound.id, supplier.id, lot_text, receipt_date): compound_instance
                 })
@@ -2210,10 +1367,10 @@ class AssaySetupCellForm(ModelFormSplitTime):
         super(AssaySetupCellForm, self).__init__(*args, **kwargs)
 
         # Change widget size
-        self.fields['cell_sample'].widget.attrs['style'] = 'width:50px;'
-        self.fields['passage'].widget.attrs['style'] = 'width:50px;'
+        self.fields['cell_sample'].widget.attrs['style'] = 'width:75px;'
+        self.fields['passage'].widget.attrs['style'] = 'width:75px;'
 
-        self.fields['density_unit'].queryset = PhysicalUnits.objects.filter(availability__contains='cell')
+        self.fields['density_unit'].queryset = PhysicalUnits.objects.filter(availability__contains='cell').order_by('unit')
 
 
 # TODO: IDEALLY THE CHOICES WILL BE PASSED VIA A KWARG
@@ -2237,18 +1394,15 @@ class AssaySetupCellFormSet(BaseModelFormSetForcedUniqueness):
             for field in self.custom_fields:
                 form.fields[field] = DicModelChoiceField(field, self.model, self.dic)
 
+            # Purge all classes
+            for field in form.fields:
+                form.fields[field].widget.attrs['class'] = ''
+
 
 class AssaySetupSettingForm(ModelFormSplitTime):
     class Meta(object):
         model = AssaySetupCell
         exclude = tracking
-
-        # widgets = {
-        #     'matrix_item': forms.TextInput(),
-        #     'setting': forms.TextInput(),
-        #     'unit': forms.TextInput(),
-        #     'addition_location': forms.TextInput(),
-        # }
 
 
 class AssaySetupSettingFormSet(BaseModelFormSetForcedUniqueness):
@@ -2270,20 +1424,24 @@ class AssaySetupSettingFormSet(BaseModelFormSetForcedUniqueness):
             for field in self.custom_fields:
                 form.fields[field] = DicModelChoiceField(field, self.model, self.dic)
 
+            # Purge all classes
+            for field in form.fields:
+                form.fields[field].widget.attrs['class'] = ''
+
     def _construct_form(self, i, **kwargs):
         form = super(AssaySetupSettingFormSet, self)._construct_form(i, **kwargs)
-        for time_unit in TIME_CONVERSIONS.keys():
+        for time_unit in list(TIME_CONVERSIONS.keys()):
             # Create fields for Days, Hours, Minutes
             form.fields['addition_time_' + time_unit] = forms.FloatField(initial=0)
             form.fields['duration_' + time_unit] = forms.FloatField(initial=0)
             # Change style
-            form.fields['addition_time_' + time_unit].widget.attrs['style'] = 'width:50px;'
-            form.fields['duration_' + time_unit].widget.attrs['style'] = 'width:50px;'
+            # form.fields['addition_time_' + time_unit].widget.attrs['style'] = 'width:75px;'
+            # form.fields['duration_' + time_unit].widget.attrs['style'] = 'width:75px;'
 
         if form.instance.addition_time:
             # Fill additional time
             addition_time_in_minutes_remaining = form.instance.addition_time
-            for time_unit, conversion in TIME_CONVERSIONS.items():
+            for time_unit, conversion in list(TIME_CONVERSIONS.items()):
                 initial_time_for_current_field = int(addition_time_in_minutes_remaining / conversion)
                 if initial_time_for_current_field:
                     form.fields['addition_time_' + time_unit].initial = initial_time_for_current_field
@@ -2295,7 +1453,7 @@ class AssaySetupSettingFormSet(BaseModelFormSetForcedUniqueness):
         if form.instance.duration:
             # Fill duration
             duration_in_minutes_remaining = form.instance.duration
-            for time_unit, conversion in TIME_CONVERSIONS.items():
+            for time_unit, conversion in list(TIME_CONVERSIONS.items()):
                 initial_time_for_current_field = int(duration_in_minutes_remaining / conversion)
                 if initial_time_for_current_field:
                     form.fields['duration_' + time_unit].initial = initial_time_for_current_field
@@ -2360,13 +1518,13 @@ AssaySetupSettingInlineFormSetFactory = inlineformset_factory(
 )
 
 
-class AssayMatrixItemFullForm(SignOffMixin, forms.ModelForm):
+class AssayMatrixItemFullForm(SignOffMixin, BootstrapForm):
     """Frontend form for Items"""
     class Meta(object):
         model = AssayMatrixItem
         widgets = {
-            'concentration': forms.NumberInput(attrs={'style': 'width:50px;'}),
-            'notebook_page': forms.NumberInput(attrs={'style': 'width:50px;'}),
+            'concentration': forms.NumberInput(attrs={'style': 'width:75px;'}),
+            'notebook_page': forms.NumberInput(attrs={'style': 'width:75px;'}),
             'notes': forms.Textarea(attrs={'cols': 50, 'rows': 3}),
             'variance_from_organ_model_protocol': forms.Textarea(attrs={'cols': 50, 'rows': 2}),
         }
@@ -2384,7 +1542,7 @@ class AssayMatrixItemFullForm(SignOffMixin, forms.ModelForm):
 
         # Make sure the barcode/ID is unique in the study
         if AssayMatrixItem.objects.filter(
-                study=self.instance.study,
+                study_id=self.instance.study.id,
                 name=self.cleaned_data.get('name')
         ).exclude(id=self.instance.id):
             raise forms.ValidationError({'name': ['ID/Barcode must be unique within study.']})
@@ -2439,7 +1597,6 @@ class AssayMatrixItemFormSet(BaseInlineFormSetForcedUniqueness):
         }
 
     def clean(self):
-        """Checks to make sure duration is valid"""
         super(AssayMatrixItemFormSet, self).clean()
 
         for index, form in enumerate(self.forms):
@@ -2477,67 +1634,7 @@ AssayMatrixItemFormSetFactory = inlineformset_factory(
 )
 
 
-# OLD SIGN OFF STUFF, NEED TO MOVE TO ASSAY STUDY TODO TODO TODO
-class AssayRunSignOffForm(SignOffMixin, forms.ModelForm):
-    class Meta(object):
-        model = AssayRun
-        fields = ['signed_off', 'signed_off_notes']
-        widgets = {
-            'signed_off_notes': forms.Textarea(attrs={'cols': 50, 'rows': 2}),
-        }
-
-
-class AssayRunStakeholderSignOffForm(SignOffMixin, forms.ModelForm):
-    class Meta(object):
-        model = AssayRunStakeholder
-        fields = ['signed_off', 'signed_off_notes']
-        widgets = {
-            'signed_off_notes': forms.Textarea(attrs={'cols': 50, 'rows': 2}),
-        }
-
-
-class AssayRunStakeholderFormSet(BaseInlineFormSet):
-    class Meta(object):
-        model = AssayRunStakeholder
-
-    def __init__(self, *args, **kwargs):
-        self.user = kwargs.pop('user', None)
-        super(AssayRunStakeholderFormSet, self).__init__(*args, **kwargs)
-
-    def get_queryset(self):
-        if not hasattr(self, '_queryset'):
-            # TODO FILTER OUT THOSE USER ISN'T ADMIN OF
-            # TODO REVIEW
-            user_admin_groups = self.user.groups.filter(name__contains=ADMIN_SUFFIX)
-            potential_groups = [group.name.replace(ADMIN_SUFFIX, '') for group in user_admin_groups]
-            queryset = super(AssayRunStakeholderFormSet, self).get_queryset()
-            # Only include unsigned off forms that user is admin of!
-            self._queryset = queryset.filter(
-                group__name__in=potential_groups,
-                signed_off_by=None
-            )
-        return self._queryset
-
-    def save(self, commit=True):
-        for form in self.forms:
-            signed_off = form.cleaned_data.get('signed_off', False)
-            if signed_off and is_group_admin(self.user, form.instance.group.name):
-                form.instance.signed_off_by = self.user
-                form.instance.signed_off_date = timezone.now()
-                form.save(commit=True)
-
-# Really, all factories should be declared like so (will have to do this for upcoming revision)
-assay_run_stakeholder_sign_off_formset_factory = inlineformset_factory(
-    AssayRun,
-    AssayRunStakeholder,
-    form=AssayRunStakeholderSignOffForm,
-    formset=AssayRunStakeholderFormSet,
-    extra=0,
-    can_delete=False
-)
-
-
-class AssayStudySignOffForm(SignOffMixin, forms.ModelForm):
+class AssayStudySignOffForm(SignOffMixin, BootstrapForm):
     class Meta(object):
         model = AssayStudy
         fields = ['signed_off', 'signed_off_notes']
@@ -2546,7 +1643,7 @@ class AssayStudySignOffForm(SignOffMixin, forms.ModelForm):
         }
 
 
-class AssayStudyStakeholderSignOffForm(SignOffMixin, forms.ModelForm):
+class AssayStudyStakeholderSignOffForm(SignOffMixin, BootstrapForm):
     class Meta(object):
         model = AssayStudyStakeholder
         fields = ['signed_off', 'signed_off_notes']
@@ -2596,7 +1693,7 @@ AssayStudyStakeholderFormSetFactory = inlineformset_factory(
 )
 
 
-class AssayStudyDataUploadForm(forms.ModelForm):
+class AssayStudyDataUploadForm(BootstrapForm):
     """Form for Bulk Uploads"""
     # Excluded for now
     # overwrite_option = OVERWRITE_OPTIONS_BULK
@@ -2627,14 +1724,760 @@ class AssayStudyDataUploadForm(forms.ModelForm):
         # test_file = None
 
         # TODO TODO TODO TODO TODO
-        if self.request and self.request.FILES:
-            test_file = data.get('bulk_file', '')
+        if self.request and self.request.FILES and data.get('bulk_file'):
+            # Make sure that this isn't the current file
+            if not study.bulk_file or study.bulk_file != data.get('bulk_file'):
+                test_file = data.get('bulk_file', '')
 
-            file_processor = AssayFileProcessor(test_file, study, self.request.user)
-            # Process the file
-            file_processor.process_file()
+                file_processor = AssayFileProcessor(test_file, study, self.request.user)
+                # Process the file
+                file_processor.process_file()
 
-            # Evil attempt to acquire preview data
-            self.cleaned_data['preview_data'] = file_processor.preview_data
+                # Evil attempt to acquire preview data
+                self.cleaned_data['preview_data'] = file_processor.preview_data
 
         return self.cleaned_data
+
+
+class AssayStudySetForm(SignOffMixin, BootstrapForm):
+    class Meta(object):
+        model = AssayStudySet
+        exclude = tracking
+        widgets = {
+            'description': forms.Textarea(attrs={'rows': 10})
+        }
+
+    def __init__(self, *args, **kwargs):
+        super(AssayStudySetForm, self).__init__(*args, **kwargs)
+
+        study_queryset = get_user_accessible_studies(
+            self.user
+        ).prefetch_related(
+            'group__microphysiologycenter_set',
+        )
+        assay_queryset = AssayStudyAssay.objects.filter(
+            study_id__in=study_queryset.values_list('id', flat=True)
+        ).prefetch_related(
+            'target',
+            'method',
+            'unit'
+        )
+
+        self.fields['studies'].queryset = study_queryset
+        self.fields['assays'].queryset = assay_queryset
+
+        # CONTRIVED
+        self.fields['studies'].widget.attrs['class'] = 'no-selectize'
+        self.fields['assays'].widget.attrs['class'] = 'no-selectize'
+
+
+class AssayReferenceForm(BootstrapForm):
+
+    query_term = forms.CharField(
+        initial='',
+        required=False,
+        label='PubMed ID / DOI'
+    )
+
+    class Meta(object):
+        model = AssayReference
+        exclude = tracking
+        widgets = {
+            'query_term': forms.Textarea(attrs={'rows': 1}),
+            'title': forms.Textarea(attrs={'rows': 2}),
+            'authors': forms.Textarea(attrs={'rows': 1}),
+            'abstract': forms.Textarea(attrs={'rows': 10}),
+            'publication': forms.Textarea(attrs={'rows': 1}),
+        }
+
+AssayStudyReferenceFormSetFactory = inlineformset_factory(
+    AssayStudy,
+    AssayStudyReference,
+    extra=1,
+    exclude=[]
+)
+
+AssayStudySetReferenceFormSetFactory = inlineformset_factory(
+    AssayStudySet,
+    AssayStudySetReference,
+    extra=1,
+    exclude=[]
+)
+
+
+# Convoluted
+def process_error_for_study_new(prefix, row, column, full_error):
+    current_error = dict(full_error)
+    modified_error = []
+
+    for error_field, error_values in current_error.items():
+        for error_value in error_values:
+            modified_error.append([
+                '|'.join([str(x) for x in [
+                    prefix,
+                    row,
+                    column,
+                    error_field
+                ]]) + '-' + error_value
+            ])
+
+    return modified_error
+
+
+# Perhaps it would have been more intelligent to leverage the forms in the add
+# There would have been different consquences for doing so, but consistency
+class AssayStudyFormNew(SetupFormsMixin, SignOffMixin, BootstrapForm):
+    setup_data = forms.CharField(required=False)
+    processed_setup_data = forms.CharField(required=False)
+    number_of_items = forms.CharField(required=False)
+    test_type = forms.ChoiceField(
+        initial='control',
+        choices=TEST_TYPE_CHOICES,
+        required=False
+    )
+
+    def __init__(self, *args, **kwargs):
+        """Init the Study Form
+
+        Kwargs:
+        groups -- a queryset of groups (allows us to avoid N+1 problem)
+        """
+        super(AssayStudyFormNew, self).__init__(*args, **kwargs)
+        self.fields['group'].queryset = filter_groups(self.user)
+
+        # Make sure there are only organ models with versions
+        # Removed for now
+        # self.fields['organ_model'].queryset = OrganModel.objects.filter(
+        #     organmodelprotocol__isnull=False
+        # ).distinct()
+
+        # SLOPPY
+        self.fields['test_type'].widget.attrs['class'] += ' no-selectize test-type required'
+        # Bad
+        self.fields['test_type'].widget.attrs['style'] = 'width:100px;'
+        self.fields['number_of_items'].widget.attrs['class'] = 'form-control number-of-items required'
+        # Bad
+        # self.fields['number_of_items'].widget.attrs['style'] = 'margin-top:10px;'
+
+    class Meta(object):
+        model = AssayStudy
+        widgets = {
+            'assay_run_id': forms.Textarea(attrs={'rows': 1}),
+            'name': forms.Textarea(attrs={'rows': 1}),
+            'description': forms.Textarea(attrs={'rows': 5, 'cols': 100}),
+        }
+        exclude = tracking + restricted + ('access_groups', 'signed_off_notes', 'bulk_file')
+
+    def clean(self):
+        """Checks for at least one study type"""
+        # clean the form data, before validation
+        data = super(AssayStudyFormNew, self).clean()
+
+        if not any([data['toxicity'], data['efficacy'], data['disease'], data['cell_characterization']]):
+            raise forms.ValidationError('Please select at least one study type')
+
+        # SLOPPY NOT DRY
+        new_setup_data = {}
+        new_matrix = None
+        new_items = None
+        new_related = None
+
+        errors = {'organ_model': [], 'setup_data': []}
+        current_errors = errors.get('setup_data')
+
+        # study = super(AssayStudyFormNew, self).save(commit=False)
+
+        if self.cleaned_data.get('setup_data', None):
+            all_setup_data = json.loads(self.cleaned_data.get('setup_data', '[]'))
+        else:
+            all_setup_data = []
+
+        # Never consider if no model
+        if not self.cleaned_data.get('organ_model', None):
+            all_setup_data = []
+
+        # Catch technically empty setup data
+        setup_data_is_empty = True
+
+        for group_set in all_setup_data:
+            if group_set:
+                setup_data_is_empty = not any(group_set.values())
+
+        if setup_data_is_empty:
+            all_setup_data = []
+
+        # if commit and all_setup_data:
+        # SEE BASE MODELS FOR WHY COMMIT IS NOT HERE
+        if all_setup_data:
+            created_by = self.user
+            created_on = timezone.now()
+
+            current_item_number = 1
+
+            # CRUDE: JUST MAKE ONE LARGE ROW?
+            # number_of_items = 0
+            #
+            # for setup_group in all_setup_data:
+            #     number_of_items += int(setup_group.get('number_of_items', '0'))
+
+            # Find max for number of columns
+            number_of_columns = 0
+            for setup_group in all_setup_data:
+                if int(setup_group.get('number_of_items', '0')) > number_of_columns:
+                    number_of_columns = int(setup_group.get('number_of_items', '0'))
+
+            new_matrix = AssayMatrix(
+                name=data.get('name', ''),
+                # Does not work with plates at the moment
+                representation='chips',
+                # study=self.instance,
+                device=None,
+                number_of_rows=len(all_setup_data),
+                number_of_columns=number_of_columns,
+                # number_of_rows=1,
+                # number_of_columns=number_of_items,
+                created_by=created_by,
+                created_on=created_on,
+                modified_by=created_by,
+                modified_on=created_on,
+            )
+
+            try:
+                new_matrix.full_clean(exclude=['study'])
+            except forms.ValidationError as e:
+                errors.get('organ_model').append(e.values())
+
+            # new_matrix.save()
+
+            # COMPOUND STUFF BECAUSE COMPOUND SCHEMA IS MISERABLE
+            # Get all chip setup assay compound instances
+            assay_compound_instances = {}
+
+            # Get all Compound Instances
+            compound_instances = {
+                (
+                    instance.compound.id,
+                    instance.supplier.id,
+                    instance.lot,
+                    str(instance.receipt_date)
+                ): instance for instance in CompoundInstance.objects.all().prefetch_related(
+                    'compound',
+                    'supplier'
+                )
+            }
+
+            # Get all suppliers
+            suppliers = {
+                supplier.name: supplier for supplier in CompoundSupplier.objects.all()
+            }
+
+            new_items = []
+            new_related = {}
+
+            # NOTE: ROW IS DERIVED FROM THE GROUP IN QUESTION
+            # ALL ITEMS IN THE GROUP ARE IN THE COLUMNS OF SAID ROW
+            for setup_row, setup_group in enumerate(all_setup_data):
+                items_in_group = int(setup_group.pop('number_of_items', '0'))
+                test_type = setup_group.get('test_type', '')
+
+                # To break out to prevent repeat errors
+                group_has_error = False
+
+                for iteration in range(items_in_group):
+                    new_item = AssayMatrixItem(
+                        # study=study,
+                        # matrix=new_matrix,
+                        name=str(current_item_number),
+                        # JUST MAKE SETUP DATE THE STUDY DATE FOR NOW
+                        setup_date=data.get('start_date', ''),
+                        row_index=setup_row,
+                        column_index=iteration,
+                        # column_index=current_item_number-1,
+                        # device=study.organ_model.device,
+                        # organ_model=study.organ_model,
+                        # organ_model_protocol=study.organ_model_protocol,
+                        test_type=test_type,
+                        created_by=created_by,
+                        created_on=created_on,
+                        modified_by=created_by,
+                        modified_on=created_on,
+                    )
+
+                    try:
+                        new_item.full_clean(exclude=[
+                            'study',
+                            'matrix',
+                            'device',
+                            'organ_model',
+                            'organ_model_protocol',
+                        ])
+                        new_items.append(new_item)
+
+                    except forms.ValidationError as e:
+                        # raise forms.ValidationError(e)
+                        errors.get('organ_model').append(e.values())
+                        group_has_error = True
+
+                    current_related_list = new_related.setdefault(
+                        str(len(new_items)), []
+                    )
+
+                    # new_item.save()
+                    for prefix, current_objects in setup_group.items():
+                        for setup_column, current_object in enumerate(current_objects):
+                            if prefix in ['cell', 'compound', 'setting'] and current_object:
+                                current_object.update({
+                                    'matrix_item': new_item,
+                                })
+                                if prefix == 'cell':
+                                    new_cell = AssaySetupCell(**current_object)
+
+                                    try:
+                                        new_cell.full_clean(exclude=['matrix_item'])
+                                        current_related_list.append(new_cell)
+                                    except forms.ValidationError as e:
+                                        # raise forms.ValidationError(e)
+                                        current_errors.append(
+                                            process_error_for_study_new(
+                                                prefix,
+                                                setup_row,
+                                                setup_column,
+                                                e
+                                            )
+                                        )
+                                        group_has_error = True
+
+                                    # new_cell.save()
+                                elif prefix == 'setting':
+                                    new_setting = AssaySetupSetting(**current_object)
+                                    try:
+                                        new_setting.full_clean(exclude=['matrix_item'])
+                                        current_related_list.append(new_setting)
+                                    except forms.ValidationError as e:
+                                        # raise forms.ValidationError(e)
+                                        current_errors.append(
+                                            process_error_for_study_new(
+                                                prefix,
+                                                setup_row,
+                                                setup_column,
+                                                e
+                                            )
+                                        )
+                                        group_has_error = True
+
+                                    # new_setting.save()
+                                elif prefix == 'compound':
+                                    # CONFUSING NOT DRY BAD
+                                    compound = int(current_object.get('compound_id', '0'))
+                                    supplier_text = current_object.get('supplier_text', 'N/A').strip()
+                                    lot_text = current_object.get('lot_text', 'N/A').strip()
+                                    receipt_date = current_object.get('receipt_date', '')
+
+                                    # NOTE THE DEFAULT, PLEASE DO THIS IN A WAY THAT IS MORE DRY
+                                    if not supplier_text:
+                                        supplier_text = 'N/A'
+
+                                    if not lot_text:
+                                        lot_text = 'N/A'
+
+                                    # Check if the supplier already exists
+                                    supplier = suppliers.get(supplier_text, '')
+
+                                    concentration = current_object.get('concentration', '0')
+                                    # Annoying, bad
+                                    if not concentration:
+                                        concentration = 0.0
+                                    else:
+                                        concentration = float(concentration)
+                                    concentration_unit_id = int(current_object.get('concentration_unit_id', '0'))
+                                    addition_location_id = int(current_object.get('addition_location_id', '0'))
+
+                                    addition_time = current_object.get('addition_time', '0')
+                                    duration = current_object.get('duration', '0')
+
+                                    if not addition_time:
+                                        addition_time = 0.0
+                                    else:
+                                        addition_time = float(addition_time)
+
+                                    if not duration:
+                                        duration = 0.0
+                                    else:
+                                        duration = float(duration)
+
+                                    # Otherwise create the supplier
+                                    if not supplier:
+                                        supplier = CompoundSupplier(
+                                            name=supplier_text,
+                                            created_by=created_by,
+                                            created_on=created_on,
+                                            modified_by=created_by,
+                                            modified_on=created_on,
+                                        )
+                                        try:
+                                            supplier.full_clean()
+                                            supplier.save()
+                                        except forms.ValidationError as e:
+                                            # raise forms.ValidationError(e)
+                                            current_errors.append(
+                                                process_error_for_study_new(
+                                                    prefix,
+                                                    setup_row,
+                                                    setup_column,
+                                                    e
+                                                )
+                                            )
+                                            group_has_error = True
+
+                                        suppliers.update({
+                                            supplier_text: supplier
+                                        })
+
+                                    # FRUSTRATING EXCEPTION
+                                    if not receipt_date:
+                                        receipt_date = None
+
+                                    # Check if compound instance exists
+                                    compound_instance = compound_instances.get((compound, supplier.id, lot_text, str(receipt_date)), '')
+
+                                    if not compound_instance:
+                                        compound_instance = CompoundInstance(
+                                            compound_id=compound,
+                                            supplier=supplier,
+                                            lot=lot_text,
+                                            receipt_date=receipt_date,
+                                            created_by=created_by,
+                                            created_on=created_on,
+                                            modified_by=created_by,
+                                            modified_on=created_on,
+                                        )
+                                        try:
+                                            compound_instance.full_clean()
+                                            compound_instance.save()
+                                        except forms.ValidationError as e:
+                                            # raise forms.ValidationError(e)
+                                            current_errors.append(
+                                                process_error_for_study_new(
+                                                    prefix,
+                                                    setup_row,
+                                                    setup_column,
+                                                    e
+                                                )
+                                            )
+                                            group_has_error = True
+
+                                        compound_instances.update({
+                                            (compound, supplier.id, lot_text, str(receipt_date)): compound_instance
+                                        })
+
+                                    # Save the AssayCompoundInstance
+                                    conflicting_assay_compound_instance = assay_compound_instances.get(
+                                        (
+                                            # new_item.id,
+                                            current_item_number,
+                                            compound_instance.id,
+                                            concentration,
+                                            concentration_unit_id,
+                                            addition_time,
+                                            duration,
+                                            addition_location_id
+                                        ), None
+                                    )
+                                    if not conflicting_assay_compound_instance:
+                                        new_compound = AssaySetupCompound(
+                                            # matrix_item_id=new_item.id,
+                                            compound_instance_id=compound_instance.id,
+                                            concentration=concentration,
+                                            concentration_unit_id=concentration_unit_id,
+                                            addition_time=addition_time,
+                                            duration=duration,
+                                            addition_location_id=addition_location_id
+                                        )
+
+                                        try:
+                                            new_compound.full_clean(exclude=['matrix_item'])
+                                            current_related_list.append(new_compound)
+                                        except forms.ValidationError as e:
+                                            # raise forms.ValidationError(e)
+                                            current_errors.append(
+                                                process_error_for_study_new(
+                                                    prefix,
+                                                    setup_row,
+                                                    setup_column,
+                                                    e
+                                                )
+                                            )
+                                            group_has_error = True
+
+                                        # new_compound.save()
+
+                                    assay_compound_instances.update({
+                                        (
+                                            # new_item.id,
+                                            current_item_number,
+                                            compound_instance.id,
+                                            concentration,
+                                            concentration_unit_id,
+                                            addition_time,
+                                            duration,
+                                            addition_location_id
+                                        ): True
+                                    })
+
+                    current_item_number += 1
+
+                    # Don't keep iterating through this group if there is a problem
+                    if group_has_error:
+                        break
+
+        if current_errors:
+            errors.get('organ_model').append(['Please review the table below for errors.'])
+            raise forms.ValidationError(errors)
+
+        new_setup_data.update({
+            'new_matrix': new_matrix,
+            'new_items': new_items,
+            'new_related': new_related,
+        })
+
+        data.update({
+            'processed_setup_data': new_setup_data
+        })
+
+        return data
+
+    def save(self, commit=True):
+        # PLEASE SEE BASE MODELS
+        # study = super(AssayStudyFormNew, self).save(commit)
+        study = super(AssayStudyFormNew, self).save()
+
+        # VERY SLOPPY
+        created_by = self.user
+        created_on = timezone.now()
+
+        study.created_by = created_by
+        study.created_on = created_on
+        study.modified_by = created_by
+        study.modified_on = created_on
+
+        study.save()
+        # SLOPPY: REVISE
+
+        study_id = study.id
+
+        if study.organ_model_id:
+            device_id = study.organ_model.device_id
+        else:
+            device_id = None
+
+        organ_model_id = study.organ_model_id
+        organ_model_protocol_id = study.organ_model_protocol_id
+
+        all_setup_data = self.cleaned_data.get('processed_setup_data', None)
+
+        if all_setup_data:
+            new_matrix = all_setup_data.get('new_matrix', None)
+            new_items = all_setup_data.get('new_items', None)
+            new_related = all_setup_data.get('new_related', None)
+
+            if new_matrix:
+                new_matrix.study_id = study_id
+                new_matrix.save()
+                new_matrix_id = new_matrix.id
+
+                new_item_ids = {}
+
+                for new_item in new_items:
+                    # ADD MATRIX and tracking
+                    new_item.matrix_id = new_matrix_id
+                    new_item.study_id = study_id
+                    new_item.device_id = device_id
+                    new_item.organ_model_id = organ_model_id
+                    new_item.organ_model_protocol_id = organ_model_protocol_id
+                    new_item.save()
+
+                    new_item_ids.update({
+                        new_item.name: new_item.id
+                    })
+
+                for current_item_name, new_related_data_set in new_related.items():
+                    new_item_id = new_item_ids.get(current_item_name, None)
+
+                    if new_item_id:
+                        for new_related_data in new_related_data_set:
+                            # ADD MATRIX ITEM
+                            new_related_data.matrix_item_id = new_item_id
+                            new_related_data.save()
+
+        return study
+
+
+class AssayMatrixFormNew(SetupFormsMixin, SignOffMixin, BootstrapForm):
+    # ADD test_types
+    test_type = forms.ChoiceField(
+        initial='control',
+        choices=TEST_TYPE_CHOICES
+    )
+
+    class Meta(object):
+        model = AssayMatrix
+        # ODD
+        fields = []
+
+    def __init__(self, *args, **kwargs):
+        """Init the Study Form
+
+        Kwargs:
+        user -- the user in question
+        """
+        # PROBABLY DON'T NEED THIS?
+        self.user = kwargs.pop('user', None)
+        super(AssayMatrixFormNew, self).__init__(*args, **kwargs)
+
+        # SLOPPY
+        self.fields['test_type'].widget.attrs['class'] += ' no-selectize test-type'
+        # Bad
+        self.fields['test_type'].widget.attrs['style'] = 'width:100px;'
+
+
+# PLEASE NOTE CRUDE HANDLING OF m2m
+class AssayTargetForm(BootstrapForm):
+    # For adding to category m2m
+    category = forms.ModelMultipleChoiceField(
+        queryset=AssayCategory.objects.all().order_by('name'),
+        # Should this be required?
+        required=False,
+        # empty_label='All'
+    )
+
+    class Meta(object):
+        model = AssayTarget
+        exclude = tracking
+
+        widgets = {
+            'description': forms.Textarea(attrs={'cols': 50, 'rows': 3}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super(AssayTargetForm, self).__init__(*args, **kwargs)
+
+        # Get category if possible
+        if self.instance and self.instance.id:
+            self.initial_categories = AssayCategory.objects.filter(
+                targets__id=self.instance.id
+            )
+            self.fields['category'].initial = (
+                self.initial_categories
+            )
+
+        # Sort the methods
+        # Would it be better to have this applied to all method queries?
+        self.fields['methods'].queryset = AssayMethod.objects.all().order_by('name')
+
+    def save(self, commit=True):
+        new_target = super(AssayTargetForm, self).save(commit)
+
+        if commit and self.cleaned_data.get('category', None):
+            for current_category in self.cleaned_data.get('category', None):
+                current_category.targets.add(self.instance)
+
+            # Do not permit removals for the moment
+            # Crude removal
+            # for initial_category in self.initial_categories:
+            #     if initial_category not in self.cleaned_data.get('category', None):
+            #         initial_category.targets.remove(self.instance)
+
+        return new_target
+
+
+class AssayMethodForm(BootstrapForm):
+    # For adding to category m2m
+    target = forms.ModelMultipleChoiceField(
+        queryset=AssayTarget.objects.all().order_by('name'),
+        # Needs to be required, methods need a target to be used
+        # required=False
+    )
+
+    class Meta(object):
+        model = AssayMethod
+        exclude = tracking
+
+        widgets = {
+            'description': forms.Textarea(attrs={'cols': 50, 'rows': 3}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super(AssayMethodForm, self).__init__(*args, **kwargs)
+
+        # Get target if possible
+        if self.instance and self.instance.id:
+            self.initial_targets = AssayTarget.objects.filter(
+                methods__id=self.instance.id
+            )
+            self.fields['target'].initial = (
+                self.initial_targets
+            )
+
+    def save(self, commit=True):
+        new_method = super(AssayMethodForm, self).save(commit)
+
+        for current_target in self.cleaned_data.get('target', None):
+            current_target.methods.add(self.instance)
+
+        # Do not permit removals for the moment
+        # Crude removal
+        # for initial_target in self.initial_targets:
+        #     if initial_target not in self.cleaned_data.get('target', None):
+        #         initial_target.methods.remove(self.instance)
+
+        return new_method
+
+
+class PhysicalUnitsForm(BootstrapForm):
+    class Meta(object):
+        model = PhysicalUnits
+        exclude = tracking + ('availability',)
+
+        widgets = {
+            'description': forms.Textarea(attrs={'cols': 50, 'rows': 3}),
+        }
+
+
+class AssayMeasurementTypeForm(BootstrapForm):
+    class Meta(object):
+        model = AssayMeasurementType
+        exclude = tracking
+
+        widgets = {
+            'description': forms.Textarea(attrs={'cols': 50, 'rows': 3}),
+        }
+
+
+class AssaySampleLocationForm(BootstrapForm):
+    class Meta(object):
+        model = AssaySampleLocation
+        exclude = tracking
+
+        widgets = {
+            'description': forms.Textarea(attrs={'cols': 50, 'rows': 3}),
+        }
+
+
+class AssaySettingForm(BootstrapForm):
+    class Meta(object):
+        model = AssaySetting
+        exclude = tracking
+
+        widgets = {
+            'description': forms.Textarea(attrs={'cols': 50, 'rows': 3}),
+        }
+
+
+class AssaySupplierForm(BootstrapForm):
+    class Meta(object):
+        model = AssaySupplier
+        exclude = tracking
+
+        widgets = {
+            'description': forms.Textarea(attrs={'cols': 50, 'rows': 3}),
+        }

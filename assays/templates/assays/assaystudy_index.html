@@ -7,9 +7,8 @@
     <li class="active">{{ object }}</li>
 {% endblock %}
 
-{% block load %}
+{% block load_js %}
     <script src="{% static "assays/assaystudy_index.js" %}"></script>
-    <script src="{% static "js/display_datatable.js" %}"></script>
 {% endblock %}
 
 {% block content %}
@@ -19,7 +18,7 @@
         <div class="alert alert-info" role="alert">
             <span class="glyphicon glyphicon-eye-open" aria-hidden="true"></span>
             <span class="sr-only">Info:</span>
-            This study can be viewed by all registered users
+            This study can be viewed by all users
         </div>
     {% endif %}
 
@@ -34,12 +33,16 @@
                         <a href="update" class="btn btn-primary" role="button">Edit This Study</a>
                     {% endif %}
                     <a href="summary" class="btn btn-primary" role="button">Study Summary</a>
-                    <a href="reproducibility" class="btn btn-primary" role="button">View Reproducibility</a>
-                    <a href="images" class="btn btn-primary" role="button">View Images</a>
+                    <a href="reproducibility" class="btn btn-primary" role="button">Reproducibility</a>
+                    <a href="power_analysis" class="btn btn-primary" role="button">Power Analysis</a>
+                    <a href="images" class="btn btn-primary" role="button">Images</a>
                     {% if user_is_group_editor and not object.signed_off_by %}
                     <a href="upload" class="btn btn-primary" role="button">Upload Data</a>
                     {% endif %}
                 </div>
+                {% if user_is_group_editor %}
+                    <a id="clone_study_request" class="btn btn-info" role="button">Clone this Study</a>
+                {% endif %}
                 {% if not user_is_group_admin and user_is_group_editor and not object.signed_off_by %}
                 <div>
                     <a id="indicate_study_is_ready_for_sign_off" class="btn btn-success" role="button">Indicate Study is Ready for Sign Off</a>
@@ -78,7 +81,7 @@
 
         {% if matrices %}
         <div>
-        <table id="matrices" class="display table table-striped table-hover" cellspacing="0" width="100%">
+        <table hidden id="matrices" class="display table table-striped table-hover" cellspacing="0" width="100%">
             <thead>
                 <tr>
                     <th>View/Edit</th>
@@ -91,11 +94,15 @@
 
             <tbody>
             {% for matrix in matrices %}
-                <tr id={{ matrix.id }} name={{ matrix.id }}>
+                <tr>
                     <td>
                         <a class="btn btn-primary"
-                           {# THIS SHOULD USE URL #}
+                           {% if matrix.representation == 'chips' and not object.signed_off_by and matrix.assaymatrixitem_set.count %}
+                           {# CRUDE SWITCH FOR BY-GROUP VS MATRIX #}
+                           href="{{ matrix.get_absolute_url }}new/">
+                           {% else %}
                            href="{{ matrix.get_absolute_url }}">
+                           {% endif %}
                             View/Edit
                         </a>
                     </td>
@@ -137,13 +144,13 @@
 
         {% if items %}
         <div class="padded-bottom">
-        <table id="matrix_items" class="display table table-striped table-hover" cellspacing="0" width="100%">
+        <table hidden id="matrix_items" class="display table table-striped table-hover" cellspacing="0" width="100%">
             <thead>
                 <tr>
                     <th>View/Edit</th>
                     <th>Name</th>
                     <th>Date</th>
-                    <th>Organ Model</th>
+                    <th>MPS Model</th>
                     <th>Compound</th>
                     <th>Cell</th>
                     <th>Setting</th>
@@ -154,7 +161,7 @@
 
             <tbody>
             {% for item in items %}
-                <tr id={{ item.id }} name={{ item.id }}>
+                <tr>
                     <td>
                         <a class="btn btn-primary"
                            href="{{ item.get_absolute_url }}">
@@ -164,9 +171,9 @@
                     <td>{{ item.name }}</td>
                     <td>{{ item.setup_date }}</td>
                     <td>{{ item.organ_model }}</td>
-                    <td>{{ item.stringify_compounds }}</td>
-                    <td>{{ item.stringify_cells }}</td>
-                    <td>{{ item.stringify_settings }}</td>
+                    <td>{{ item.stringify_compounds|linebreaksbr }}</td>
+                    <td>{{ item.stringify_cells|linebreaksbr }}</td>
+                    <td>{{ item.stringify_settings|linebreaksbr }}</td>
                     <td>
                         {{ item.full_creator }}
                     </td>
@@ -240,6 +247,62 @@
             <br>
             <br>
             Was sent to users that can Sign Off on the study.
+        </h3>
+    </div>
+    </div>
+    {% endif %}
+
+    {% if user_is_group_editor %}
+    <div hidden id="clone_study_section" title="Clone this Study">
+    <div class="alert alert-info" role="alert">
+        <span class="glyphicon glyphicon-duplicate" aria-hidden="true"></span>
+        <span class="sr-only">Info:</span>
+        Cloning a Study will create a copy of the Study.
+        <br>
+        <hr>
+        The following related data <strong>will be copied as is:</strong>
+        <ul>
+            <li>Matrices</li>
+            <li>Matrix Items</li>
+            <li>Assays</li>
+        </ul>
+        <br>
+        The following <strong>will be modified:</strong>
+        <ul>
+            <li>The Study Name will have "Clone-" appended to the front</li>
+            <li>The Description will indicate what the Study was cloned from</li>
+            <li>The Creator will be changed to the User performing the clone</li>
+            <li>The Start Date will change to the current time</li>
+        </ul>
+        <br>
+        The following <strong>will NOT be included:</strong>
+        <ul>
+            <li>Protocol</li>
+            <li>Images</li>
+            <li>Data Points</li>
+            <li>Supporting Data</li>
+            <li>References</li>
+        </ul>
+    </div>
+    <div hidden id="clone_failure" class="alert alert-danger" role="alert">
+        <h3>
+            <span class="glyphicon glyphicon-exclamation-sign" aria-hidden="true"></span>
+            <span class="sr-only">Danger:</span>
+            Your request to clone has failed.
+            <br>
+            <br>
+            <span id="clone_failure_message"></span>
+            <br>
+            <br>
+            <a hidden href="" id="clone_link_fail">Click here to go to the existing clone Study.</a>
+        </h3>
+    </div>
+    <div hidden id="clone_success" class="alert alert-success" role="alert">
+        <h3>
+            <span class="glyphicon glyphicon-check" aria-hidden="true"></span>
+            <span class="sr-only">Success:</span>
+            Your request has succeeded.
+            <a href="" id="clone_link_success">Click here to go to the new Study.</a>
         </h3>
     </div>
     </div>

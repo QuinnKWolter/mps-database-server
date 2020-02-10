@@ -167,7 +167,7 @@ $(document).ready(function () {
             );
         }
         else {
-            // Crude propogation
+            // Crude propagation
             var current_window = window.opener;
             while (current_window) {
                 // SLOPPY
@@ -177,6 +177,16 @@ $(document).ready(function () {
                     $.urlParam('new_pk'),
                     decodeURIComponent($.urlParam('new_name'))
                 );
+
+                // Crude special exception for Study
+                // If this is AssayTarget or AssayMethod AND is the final window
+                if (!current_window.opener && ($.urlParam('model') === 'AssayTarget' || $.urlParam('model') === 'AssayMethod')) {
+                    // Categories, Methods, and Targets are related
+                    // As a result, we need to refresh those relationships
+                    // This is an expedient means of doing so, but is admittedly odd
+                    // Please see assaystudy_add.js
+                    current_window.ASSAYS.refresh_assay_relationships();
+                }
 
                 current_window = current_window.opener;
             }

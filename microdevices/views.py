@@ -38,7 +38,8 @@ from mps.mixins import (
     OneGroupRequiredMixin,
     CreatorOrSuperuserRequiredMixin,
     ListHandlerMixin,
-    DetailHandlerMixin
+    DetailHandlerMixin,
+    CreatorAndNotInUseMixin
 )
 from mps.base.models import save_forms_with_tracking
 from django.contrib.auth.decorators import login_required, user_passes_test
@@ -66,12 +67,15 @@ class MicrodeviceMixin(FormHandlerMixin):
 
         return context
 
-class MicrodeviceAdd(SpecificGroupRequiredMixin, MicrodeviceMixin, CreateView):
-    required_group_name = 'Add Microdevices Front'
+class MicrodeviceAdd(OneGroupRequiredMixin, MicrodeviceMixin, CreateView):
+    # required_group_name = 'Add Microdevices Front'
+    pass
 
 
-class MicrodeviceUpdate(SpecificGroupRequiredMixin, MicrodeviceMixin, UpdateView):
-    required_group_name = 'Change Microdevices Front'
+# Exception
+class MicrodeviceUpdate(CreatorOrSuperuserRequiredMixin, MicrodeviceMixin, UpdateView):
+    # required_group_name = 'Change Microdevices Front'
+    pass
 
 
 class MicrodeviceList(ListView):
@@ -138,8 +142,9 @@ class OrganModelMixin(FormHandlerMixin):
             # return redirect('{}update/'.format(self.object.get_absolute_url()))
 
 
-class OrganModelAdd(SpecificGroupRequiredMixin, OrganModelMixin, CreateView):
-    required_group_name = 'Add Microdevices Front'
+class OrganModelAdd(OneGroupRequiredMixin, OrganModelMixin, CreateView):
+    # required_group_name = 'Add Microdevices Front'
+    pass
 
 
 # PLEASE NOTE THE SPECIAL dispatch
@@ -191,18 +196,20 @@ class OrganModelDetail(DetailView):
     def get_context_data(self, **kwargs):
         context = super(OrganModelDetail, self).get_context_data(**kwargs)
 
-        assays = ValidatedAssay.objects.filter(organ_model_id=self.object.id).prefetch_related('assay', 'assay__assay_type')
+        # Deprecated!
+        # assays = ValidatedAssay.objects.filter(organ_model_id=self.object.id).prefetch_related('assay', 'assay__assay_type')
 
-        if self.object.center and any(i in self.object.center.groups.all() for i in self.request.user.groups.all()):
-            protocols = OrganModelProtocol.objects.filter(
-                organ_model_id=self.object.id
-            ).order_by('-version')
-        else:
-            protocols = None
+        # if self.object.center and any(i in self.object.center.groups.all() for i in self.request.user.groups.all()):
+        #     protocols = OrganModelProtocol.objects.filter(
+        #         organ_model_id=self.object.id
+        #     ).order_by('-version')
+        # else:
+        #     protocols = None
 
         context.update({
-            'assays': assays,
-            'protocols': protocols,
+            # 'assays': assays,
+            # 'protocols': protocols,
+            'protocol_access': self.object.center and any(i in self.object.center.groups.all() for i in self.request.user.groups.all())
         })
 
         return context
@@ -266,6 +273,21 @@ class OrganModelProtocolUpdate(FormHandlerMixin, UpdateView):
         return context
 
 
+class OrganModelProtocolDetail(DetailView):
+    """Displays details for an Organ Model Protocol"""
+    model = OrganModelProtocol
+    template_name = 'microdevices/organmodelprotocol_detail.html'
+
+    def get_context_data(self, **kwargs):
+        context = super(OrganModelProtocolDetail, self).get_context_data(**kwargs)
+
+        context.update({
+            'protocol_access': self.object.organ_model.center and any(i in self.object.organ_model.center.groups.all() for i in self.request.user.groups.all())
+        })
+
+        return context
+
+
 class ManufacturerMixin(FormHandlerMixin):
     model = Manufacturer
     form_class = ManufacturerForm
@@ -275,7 +297,7 @@ class ManufacturerAdd(OneGroupRequiredMixin, ManufacturerMixin, CreateView):
     pass
 
 
-class ManufacturerUpdate(CreatorOrSuperuserRequiredMixin, ManufacturerMixin, UpdateView):
+class ManufacturerUpdate(CreatorAndNotInUseMixin, ManufacturerMixin, UpdateView):
     pass
 
 

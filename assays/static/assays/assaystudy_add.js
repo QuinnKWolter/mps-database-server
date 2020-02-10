@@ -1,3 +1,9 @@
+// Solving issues by adding to global scope is tasteless
+window.ASSAYS = {
+    // AJAX call and refresh relationships
+    refresh_assay_relationships: null
+};
+
 $(document).ready(function () {
     var group_selector = $('#id_group');
     var center_name_selector = $('#center_name');
@@ -104,24 +110,28 @@ $(document).ready(function () {
         }
     }
 
-    $.ajax({
-        url: "/assays_ajax/",
-        type: "POST",
-        dataType: "json",
-        data: {
-            call: 'fetch_assay_associations',
-            csrfmiddlewaretoken: window.COOKIES.csrfmiddlewaretoken
-        },
-    })
-    .done(function (json) {
-        category_to_targets = json.category_to_targets;
-        target_to_methods = json.target_to_methods;
+    window.ASSAYS.refresh_assay_relationships = function() {
+        $.ajax({
+            url: "/assays_ajax/",
+            type: "POST",
+            dataType: "json",
+            data: {
+                call: 'fetch_assay_associations',
+                csrfmiddlewaretoken: window.COOKIES.csrfmiddlewaretoken
+            },
+        })
+        .done(function (json) {
+            category_to_targets = json.category_to_targets;
+            target_to_methods = json.target_to_methods;
 
-        apply_filters_to_all_rows();
-    })
-    .fail(function (xhr, errmsg, err) {
-        console.log(xhr.status + ": " + xhr.responseText);
-    });
+            apply_filters_to_all_rows();
+        })
+        .fail(function (xhr, errmsg, err) {
+            console.log(xhr.status + ": " + xhr.responseText);
+        });
+    };
+
+    window.ASSAYS.refresh_assay_relationships();
 
     // MAKE SURE ALL INLINES FOR ASSAYS ARE SELECTED AND NOTHING ELSE, PLEASE
     // IDEALLY WOULD NOT TRIGGER ON UNIT CHANGE
@@ -140,4 +150,78 @@ $(document).ready(function () {
     $('#add_button-assaystudyassay_set').click(function() {
         apply_filters_to_all_rows();
     });
+
+    // PBPK
+    // var is more or less deprecated
+    var pbpk_trigger = $('#id_pbpk');
+    var pbpk_section = $('#pbpk_section');
+
+    var pbpk_steady_state_radio = $('#id_pbpk_steady_state_radio');
+    var pbpk_bolus_radio = $('#id_pbpk_bolus_radio');
+
+    var pbpk_steady_state = $('#id_pbpk_steady_state');
+    var pbpk_bolus = $('#id_pbpk_bolus');
+
+    var total_device_volume = $('#total_device_volume_container');
+    var flow_rate = $('#flow_rate_container');
+
+    if (pbpk_steady_state.prop('checked')) {
+        pbpk_trigger.prop('checked', true);
+        pbpk_bolus.prop('checked', false);
+        pbpk_steady_state_radio.prop('checked', true);
+    }
+    else if (pbpk_bolus.prop('checked')) {
+        pbpk_trigger.prop('checked', true);
+        pbpk_steady_state.prop('checked', false);
+        pbpk_bolus_radio.prop('checked', true);
+    }
+
+    pbpk_trigger.change(function() {
+        // Toggle radio buttons
+        if ($(this).prop('checked')) {
+            pbpk_section.show('slow');
+            pbpk_steady_state_radio.trigger('change');
+            pbpk_bolus_radio.trigger('change');
+
+            // TERRIBLE: UNCCHECK AND DISABLE ALL OTHER STUDY TYPES
+            $('#id_toxicity').prop('checked', false);
+            $('#id_efficacy').prop('checked', false);
+            $('#id_disease').prop('checked', false);
+            $('#id_cell_characterization').prop('checked', false);
+
+            $('#id_toxicity').prop('disabled', true);
+            $('#id_efficacy').prop('disabled', true);
+            $('#id_disease').prop('disabled', true);
+            $('#id_cell_characterization').prop('disabled', true);
+        }
+        else {
+            pbpk_section.hide('slow');
+            pbpk_steady_state.prop('checked', false);
+            pbpk_bolus.prop('checked', false);
+
+            // ENABLE ALL OTHER STUDY TYPES
+            $('#id_toxicity').prop('disabled', false);
+            $('#id_efficacy').prop('disabled', false);
+            $('#id_disease').prop('disabled', false);
+            $('#id_cell_characterization').prop('disabled', false);
+        }
+    }).trigger('change');
+
+    pbpk_steady_state_radio.change(function() {
+        if (pbpk_trigger.prop('checked') && $(this).prop('checked')) {
+            pbpk_steady_state.prop('checked', true);
+            pbpk_bolus.prop('checked', false);
+            flow_rate.show('slow');
+            total_device_volume.hide('slow');
+        }
+    }).trigger('change');
+
+    pbpk_bolus_radio.change(function() {
+        if (pbpk_trigger.prop('checked') && $(this).prop('checked')) {
+            pbpk_steady_state.prop('checked', false);
+            pbpk_bolus.prop('checked', true);
+            flow_rate.hide('slow');
+            total_device_volume.show('slow');
+        }
+    }).trigger('change');
 });

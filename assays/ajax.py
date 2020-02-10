@@ -1524,7 +1524,7 @@ def validate_data_file(request):
     include_all = request.POST.get('include_all', '')
     truncate_negative = request.POST.get('truncate_negative', '')
     dynamic_quality = json.loads(request.POST.get('dynamic_quality', '{}'))
-    number_for_interval = request.POST.get('number_for_interval', ''),
+    number_for_interval = request.POST.get('number_for_interval', '')
 
     this_study = AssayStudy.objects.get(pk=int(study))
 
@@ -1908,13 +1908,18 @@ def fetch_pre_submission_filters(request):
     ).exclude(
         organ_model_id=None
     ).prefetch_related(
-        'organ_model'
+        'organ_model__organ'
     )
 
     # Please note exclusion of null organ model here
     organ_models = sorted(list(set([
-        (matrix_item.organ_model_id, matrix_item.organ_model.name) for matrix_item in
-        accessible_matrix_items.exclude(organ_model_id=None)
+        (
+            matrix_item.organ_model_id,
+            '{} ({})'.format(
+                matrix_item.organ_model.name,
+                matrix_item.organ_model.organ,
+            )
+        ) for matrix_item in accessible_matrix_items.exclude(organ_model_id=None)
     ])), key=lambda x: x[1])
 
     organ_model_ids = {organ_model[0]: True for organ_model in organ_models}
@@ -4007,10 +4012,22 @@ def fetch_one_sample_power_analysis_results(request):
     one_sample_compound = request.POST.get('one_sample_compound', '')
     sig = request.POST.get('sig', '')
     one_sample_tp = request.POST.get('one_sample_tp', '')
-    power_analysis_data = one_sample_power_analysis(power_analysis_input, float(sig), one_sample_compound, float(one_sample_tp))
+    os_diff = request.POST.get('os_diff', '')
+    os_diff_percentage = request.POST.get('os_diff_percentage', '')
+    os_sample_size = request.POST.get('os_sample_size', '')
+    os_power = request.POST.get('os_power', '')
+    power_analysis_data = one_sample_power_analysis(
+                            power_analysis_input,
+                            float(sig),
+                            one_sample_compound,
+                            float(one_sample_tp),
+                            os_diff,
+                            os_diff_percentage,
+                            os_sample_size,
+                            os_power
+                        )
 
-    data = {}
-    data['power_analysis_data'] = power_analysis_data
+    data = {'power_analysis_data': power_analysis_data}
 
     return HttpResponse(json.dumps(data), content_type='application/json')
 

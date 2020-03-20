@@ -2922,3 +2922,7 @@ class AssayStudyComponents(TemplateView):
 
 class PBPKFilterView(TemplateView):
     template_name = 'assays/assay_pbpk_filter.html'
+
+
+class PBPKView(TemplateView):
+    template_name = 'assays/assay_pbpk.html'

@@ -383,6 +383,7 @@ $(document).ready(function () {
     }
 
     function clear_clearance() {
+        $('#input-icl').val("");
         $('#pk-summary-graph').empty();
         $('#pk-clearance-graph').empty();
         $('#continuous-infusion-table').empty();
